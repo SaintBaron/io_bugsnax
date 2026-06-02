@@ -17,14 +17,6 @@ skeleton, skin weights, and animation.
 | `.daecache`   | Static mesh     | position · normal · colour · UV · tangent · UV2 · UV3      |
 | `.xcache`     | Skinned character | mesh + skeleton + skin weights + animation               |
 
-> **The `.xcache` code is frozen.** Import/export for `.xcache` lives
-> in three self-contained modules (`xcache_parser.py`,
-> `xcache_importer.py`, `xcache_exporter.py`) ported verbatim from the
-> `io_directx_x` addon at its xcache-validated state. They are kept
-> isolated here so that ongoing work on the separate DirectX `.x`
-> addon can never regress the hard-won, reverse-engineered SEMS logic.
-> Don't edit these modules to accommodate `.x` changes.
-
 ---
 
 ## Installation
@@ -185,10 +177,7 @@ system.
 ```
 io_bugsnax/
 ├── __init__.py           Blender operators and menu registration (all 3 formats)
-├── parser.py             .objcache / .daecache binary read/write (CacheMesh)
-├── importer.py           CacheMesh → Blender object
-├── exporter.py           Blender object → CacheMesh → file
-├── xcache_parser.py      .xcache binary read/write   (frozen)
-├── xcache_importer.py    .xcache → Blender rig        (frozen)
-└── xcache_exporter.py    Blender rig → .xcache file   (frozen)
+├── parser.py             .xcache / .objcache / .daecache binary read/write (CacheMesh)
+├── importer.py           .xcache / .objcache / .daecache → Blender object
+├── exporter.py           Blender object → .xcache / .objcache / .daecache → file
 ```
