@@ -1,24 +1,24 @@
-"""Blender → cache export for all three Bugsnax formats.
+"""Blender -> cache export for all three Bugsnax cache formats.
 
-  * export_cache               — .objcache / .daecache static mesh.
-  * export_xcache_from_blender — .xcache skinned character.  Frozen
-    logic from the former xcache_exporter.py, merged in verbatim.
+* export_cache               -- .objcache / .daecache static mesh.
+* export_xcache_from_blender -- .xcache skinned character
+                                (mesh + skeleton + skin weights + animation).
 """
 
 import os
-import re
 import math
 import struct
 import bmesh
 import bpy
-from typing import List, Tuple, Dict, Optional
-from mathutils import Matrix, Vector, Quaternion
+from typing import List, Tuple, Optional
+from mathutils import Matrix, Vector
 from . import parser as cache_parser
 
 
 def _color_to_bytes(c):
     def _clamp(x):
         return max(0, min(255, int(round(x * 255.0))))
+
     return bytes((_clamp(c[0]), _clamp(c[1]), _clamp(c[2]), _clamp(c[3])))
 
 
@@ -31,7 +31,7 @@ def _gather_textures_from_material(mat):
     if mat is None or not mat.use_nodes:
         return out
 
-    bsdf = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+    bsdf = next((n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
     if bsdf is None:
         return out
 
@@ -42,19 +42,19 @@ def _gather_textures_from_material(mat):
                 continue
             node = sock.links[0].from_node
             # Hop through a Normal Map node when present.
-            if node.type == 'NORMAL_MAP' and node.inputs['Color'].is_linked:
-                node = node.inputs['Color'].links[0].from_node
-            if node.type == 'TEX_IMAGE' and node.image is not None:
+            if node.type == "NORMAL_MAP" and node.inputs["Color"].is_linked:
+                node = node.inputs["Color"].links[0].from_node
+            if node.type == "TEX_IMAGE" and node.image is not None:
                 img = node.image
-                fp = (img.filepath or img.filepath_raw or '').replace('\\', '/')
-                if 'Content/' in fp:
-                    return fp[fp.index('Content/'):]
+                fp = (img.filepath or img.filepath_raw or "").replace("\\", "/")
+                if "Content/" in fp:
+                    return fp[fp.index("Content/") :]
                 return os.path.basename(fp) if fp else img.name
         return None
 
-    diffuse = _path_from_input(('Base Color', 'BaseColor'))
-    normal  = _path_from_input(('Normal',))
-    spec    = _path_from_input(('Specular IOR Level', 'Specular'))
+    diffuse = _path_from_input(("Base Color", "BaseColor"))
+    normal = _path_from_input(("Normal",))
+    spec = _path_from_input(("Specular IOR Level", "Specular"))
 
     # Stop at the first gap so we don't write e.g. a normal-map path
     # in slot 0 when there's no diffuse.
@@ -69,7 +69,7 @@ def _gather_textures_from_material(mat):
 def _triangulate_mesh_copy(obj, depsgraph):
     """Return a triangulated copy of the depsgraph-evaluated mesh."""
     me_src = obj.evaluated_get(depsgraph).to_mesh()
-    me = me_src.copy() if hasattr(me_src, 'copy') else me_src
+    me = me_src.copy() if hasattr(me_src, "copy") else me_src
     bm = bmesh.new()
     bm.from_mesh(me)
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
@@ -79,14 +79,15 @@ def _triangulate_mesh_copy(obj, depsgraph):
     return me
 
 
-def _build_cache_mesh_from_object(obj, depsgraph, global_scale: float,
-                                  force_type: str) -> cache_parser.CacheMesh:
+def _build_cache_mesh_from_object(
+    obj, depsgraph, global_scale: float, force_type: str
+) -> cache_parser.CacheMesh:
     """Build a CacheMesh from the depsgraph-evaluated state of `obj`."""
     me = _triangulate_mesh_copy(obj, depsgraph)
 
     out = cache_parser.CacheMesh()
     out.cache_type = force_type or "obj"
-    out.tint_rgba = b'\xff\xff\xff\xff'
+    out.tint_rgba = b"\xff\xff\xff\xff"
 
     mat = obj.material_slots[0].material if obj.material_slots else None
     out.textures = _gather_textures_from_material(mat)
@@ -96,9 +97,10 @@ def _build_cache_mesh_from_object(obj, depsgraph, global_scale: float,
 
     # Cache files are Y-up; Blender is Z-up. Inverse of the importer's
     # +90° X rotation: (x, y, z) → (x, z, -y).
-    out.positions = [(v.co.x * inv_scale,
-                      v.co.z * inv_scale,
-                      -v.co.y * inv_scale) for v in me.vertices]
+    out.positions = [
+        (v.co.x * inv_scale, v.co.z * inv_scale, -v.co.y * inv_scale)
+        for v in me.vertices
+    ]
 
     # AABB in cache-space (post-rotation), matching what the engine sees.
     if out.positions:
@@ -150,11 +152,11 @@ def _build_cache_mesh_from_object(obj, depsgraph, global_scale: float,
     out.uvs = uv_arr
 
     # Vertex colours.
-    color_arr = [b'\xff\xff\xff\xff'] * n_verts
+    color_arr = [b"\xff\xff\xff\xff"] * n_verts
     if me.color_attributes:
         attr = me.color_attributes.active_color or me.color_attributes[0]
         try:
-            if attr.domain == 'CORNER':
+            if attr.domain == "CORNER":
                 seen = [False] * n_verts
                 for poly in me.polygons:
                     for loop_idx in poly.loop_indices:
@@ -187,8 +189,8 @@ def _build_cache_mesh_from_object(obj, depsgraph, global_scale: float,
                         seen[vi] = True
             return arr
 
-        out.uv2 = _gather_uv(me.uv_layers.get('UV2'))
-        out.uv3 = _gather_uv(me.uv_layers.get('UV3'))
+        out.uv2 = _gather_uv(me.uv_layers.get("UV2"))
+        out.uv3 = _gather_uv(me.uv_layers.get("UV3"))
 
     out.faces = [tuple(p.vertices) for p in me.polygons if len(p.vertices) == 3]
     return out
@@ -201,7 +203,7 @@ def _conform_notes(obj, cache_type: str) -> list:
     just aren't read by the writer."""
     notes = []
     fmt = "objcache" if cache_type == "obj" else "daecache"
-    if any(m.type == 'ARMATURE' for m in obj.modifiers):
+    if any(m.type == "ARMATURE" for m in obj.modifiers):
         notes.append(f"Armature modifier baked into the {fmt} (no skeleton stored).")
     if obj.vertex_groups and any(v.groups for v in obj.data.vertices):
         notes.append(f"Vertex groups dropped from the {fmt} (no skin-weight slot).")
@@ -212,23 +214,26 @@ def _conform_notes(obj, cache_type: str) -> list:
     return notes
 
 
-def export_cache(context, filepath: str,
-                 use_selection: bool = False,
-                 global_scale: float = 1.0,
-                 force_type: str = "",
-                 **_):
+def export_cache(
+    context,
+    filepath: str,
+    use_selection: bool = False,
+    global_scale: float = 1.0,
+    force_type: str = "",
+    **_,
+):
     """Export one mesh as .objcache or .daecache."""
     if use_selection:
-        candidates = [o for o in context.selected_objects if o.type == 'MESH']
+        candidates = [o for o in context.selected_objects if o.type == "MESH"]
     else:
-        candidates = [o for o in context.scene.objects if o.type == 'MESH']
+        candidates = [o for o in context.scene.objects if o.type == "MESH"]
 
     if not candidates:
-        return {'CANCELLED'}, ["No mesh object found to export."]
+        return {"CANCELLED"}, ["No mesh object found to export."]
 
     # Prefer the active object; the cache format is single-mesh.
     obj = context.view_layer.objects.active
-    if obj is None or obj.type != 'MESH' or obj not in candidates:
+    if obj is None or obj.type != "MESH" or obj not in candidates:
         obj = candidates[0]
     messages = []
     if len(candidates) > 1:
@@ -245,10 +250,9 @@ def export_cache(context, filepath: str,
     messages.extend(_conform_notes(obj, force_type))
 
     depsgraph = context.evaluated_depsgraph_get()
-    cache_mesh = _build_cache_mesh_from_object(obj, depsgraph,
-                                               global_scale, force_type)
+    cache_mesh = _build_cache_mesh_from_object(obj, depsgraph, global_scale, force_type)
     cache_parser.write_cache_file(cache_mesh, filepath)
-    return {'FINISHED'}, messages
+    return {"FINISHED"}, messages
 
 
 # ============================================================================
@@ -260,17 +264,28 @@ def export_cache(context, filepath: str,
 
 # --- shared transform/material helpers (copied so this module is standalone) ---
 
+
 def _axis_matrix(axis_forward, axis_up):
     import numpy as np
-    _AXES = {'X':(1,0,0),'-X':(-1,0,0),'Y':(0,1,0),'-Y':(0,-1,0),'Z':(0,0,1),'-Z':(0,0,-1)}
+
+    _AXES = {
+        "X": (1, 0, 0),
+        "-X": (-1, 0, 0),
+        "Y": (0, 1, 0),
+        "-Y": (0, -1, 0),
+        "Z": (0, 0, 1),
+        "-Z": (0, 0, -1),
+    }
     fwd = np.array(_AXES[axis_forward], float)
-    upv = np.array(_AXES[axis_up],      float)
+    upv = np.array(_AXES[axis_up], float)
     rgt = np.cross(fwd, upv)
 
-    F   = np.column_stack([rgt, upv, fwd])
-    B   = np.column_stack([(1,0,0),(0,0,1),(0,1,0)])
-    M3  = F @ np.linalg.inv(B)
-    return Matrix([[float(M3[r,c]) for c in range(3)] + [0] for r in range(3)] + [[0,0,0,1]])
+    F = np.column_stack([rgt, upv, fwd])
+    B = np.column_stack([(1, 0, 0), (0, 0, 1), (0, 1, 0)])
+    M3 = F @ np.linalg.inv(B)
+    return Matrix(
+        [[float(M3[r, c]) for c in range(3)] + [0] for r in range(3)] + [[0, 0, 0, 1]]
+    )
 
 
 def _effective_materials(obj):
@@ -290,7 +305,6 @@ def _effective_materials(obj):
     return []
 
 
-
 def _bl_bone_to_dx_world(bl_mat, bl_to_dx_3, inv_scale):
 
     conv_4 = Matrix.Identity(4)
@@ -305,13 +319,12 @@ def _bl_bone_to_dx_world(bl_mat, bl_to_dx_3, inv_scale):
     return dx_mat
 
 
-
 # =============================================================================
 # Bugsnax .xcache (SEMS) binary writer + Blender bridge
 # =============================================================================
 
-XCACHE_MAGIC = b'SEMS'
-XCACHE_FPS = 25.0          # constant across all observed files
+XCACHE_MAGIC = b"SEMS"
+XCACHE_FPS = 25.0  # constant across all observed files
 XCACHE_VERSION = 1
 XCACHE_FLAGS = 0x10101
 
@@ -319,24 +332,25 @@ XCACHE_FLAGS = 0x10101
 def _write_header(out: bytearray, anim_frame_count: float, bone_count: int) -> None:
     """Write the 32-byte file header at offset 0."""
     out += XCACHE_MAGIC
-    out += struct.pack('<II', 0, 0)                       # bytes 0x04..0x0C: zero
-    out += struct.pack('<f', float(anim_frame_count))     # bytes 0x0C: anim frame count
-    out += struct.pack('<f', XCACHE_FPS)                  # bytes 0x10: 25.0
-    out += struct.pack('<I', XCACHE_VERSION)              # bytes 0x14: version
-    out += struct.pack('<I', XCACHE_FLAGS)                # bytes 0x18: flags
-    out += struct.pack('<I', bone_count)                  # bytes 0x1C: bone count
+    out += struct.pack("<II", 0, 0)  # bytes 0x04..0x0C: zero
+    out += struct.pack("<f", float(anim_frame_count))  # bytes 0x0C: anim frame count
+    out += struct.pack("<f", XCACHE_FPS)  # bytes 0x10: 25.0
+    out += struct.pack("<I", XCACHE_VERSION)  # bytes 0x14: version
+    out += struct.pack("<I", XCACHE_FLAGS)  # bytes 0x18: flags
+    out += struct.pack("<I", bone_count)  # bytes 0x1C: bone count
 
 
 # ---------- Per-bone data block writer ----------
 
+
 def _write_4x4_dx(out: bytearray, m16: List[float]) -> None:
     """Write 16 floats (a 4x4 matrix in row-major DirectX order)."""
-    out += struct.pack('<16f', *m16)
+    out += struct.pack("<16f", *m16)
 
 
 def _write_3x4_plus_translation(out: bytearray, m16: List[float]) -> None:
     """Write the 64-byte bone bind-pose layout: 3x4 rotation + translation."""
-    out += struct.pack('<16f', *m16)
+    out += struct.pack("<16f", *m16)
 
 
 def _invert_dx_matrix(m16):
@@ -352,26 +366,44 @@ def _invert_dx_matrix(m16):
     # invert in column-vec form, then transpose back to row-major.
     try:
         # Build col-vec matrix: m_col[r][c] = m16[c*4 + r]
-        m_col = Matrix([
-            [m16[0],  m16[4],  m16[8],  m16[12]],
-            [m16[1],  m16[5],  m16[9],  m16[13]],
-            [m16[2],  m16[6],  m16[10], m16[14]],
-            [m16[3],  m16[7],  m16[11], m16[15]],
-        ])
+        m_col = Matrix(
+            [
+                [m16[0], m16[4], m16[8], m16[12]],
+                [m16[1], m16[5], m16[9], m16[13]],
+                [m16[2], m16[6], m16[10], m16[14]],
+                [m16[3], m16[7], m16[11], m16[15]],
+            ]
+        )
         inv_col = m_col.inverted()
         # Transpose back to row-major DX form
         return [float(inv_col[c][r]) for r in range(4) for c in range(4)]
     except Exception:
         # Identity fallback if matrix is singular
-        return [1.0, 0.0, 0.0, 0.0,
-                0.0, 1.0, 0.0, 0.0,
-                0.0, 0.0, 1.0, 0.0,
-                0.0, 0.0, 0.0, 1.0]
+        return [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+        ]
 
 
-def _write_decoration_block(out: bytearray,
-                              skin_offset: Optional[List[float]] = None,
-                              bind_translation: Optional[Tuple[float, float, float]] = None) -> None:
+def _write_decoration_block(
+    out: bytearray,
+    skin_offset: Optional[List[float]] = None,
+    bind_translation: Optional[Tuple[float, float, float]] = None,
+) -> None:
     """Write the 104-byte block that follows the 3 matrix copies in each
     bone's data section.
 
@@ -389,12 +421,12 @@ def _write_decoration_block(out: bytearray,
     function produced.
     """
     # 40-byte prefix: 9 zero floats + 1.0
-    out += b'\x00' * 36
-    out += struct.pack('<f', 1.0)
+    out += b"\x00" * 36
+    out += struct.pack("<f", 1.0)
 
     # 64-byte skin offset matrix
     if skin_offset is not None and len(skin_offset) == 16:
-        out += struct.pack('<16f', *skin_offset)
+        out += struct.pack("<16f", *skin_offset)
     else:
         # Fallback: identity rotation + inverse bind translation. This
         # matches what the original 100-byte hardcoded decoration block
@@ -404,11 +436,25 @@ def _write_decoration_block(out: bytearray,
             bx = by = bz = 0.0
         else:
             bx, by, bz = bind_translation
-        out += struct.pack('<16f',
-                            1.0, 0.0, -0.0, 0.0,
-                           -0.0, 1.0, -0.0, 0.0,
-                           -0.0, -0.0, 1.0, 0.0,
-                           -float(bx), -float(by), -float(bz), 1.0)
+        out += struct.pack(
+            "<16f",
+            1.0,
+            0.0,
+            -0.0,
+            0.0,
+            -0.0,
+            1.0,
+            -0.0,
+            0.0,
+            -0.0,
+            -0.0,
+            1.0,
+            0.0,
+            -float(bx),
+            -float(by),
+            -float(bz),
+            1.0,
+        )
 
 
 def _write_position_stride16(out: bytearray, pos_keys: dict, max_tick: int) -> int:
@@ -444,21 +490,26 @@ def _write_position_stride16(out: bytearray, pos_keys: dict, max_tick: int) -> i
             f1 = prev_z
         # Current tick's X is at f3
         cur_x, cur_y, cur_z = pos_at[tick]
-        out += struct.pack('<4f', f0, f1, float(tick), cur_x)
+        out += struct.pack("<4f", f0, f1, float(tick), cur_x)
         n_written += 16
 
     return n_written
 
 
-def _write_scale_stride16(out: bytearray, scale_keys: dict, max_tick: int,
-                          last_pos_tick: int, last_pos_y: float, last_pos_z: float
-                          ) -> Tuple[int, bytes]:
+def _write_scale_stride16(
+    out: bytearray,
+    scale_keys: dict,
+    max_tick: int,
+    last_pos_tick: int,
+    last_pos_y: float,
+    last_pos_z: float,
+) -> Tuple[int, bytes]:
     """Write the scale stride-16 block (lag-1 encoded, separate from position)."""
     # First write the transition entry between pos and scale blocks
     transition = (
-        struct.pack('<2f', last_pos_y, last_pos_z) +
-        struct.pack('<I', last_pos_tick) +
-        struct.pack('<f', 1.0)
+        struct.pack("<2f", last_pos_y, last_pos_z)
+        + struct.pack("<I", last_pos_tick)
+        + struct.pack("<f", 1.0)
     )
     out += transition
 
@@ -481,7 +532,7 @@ def _write_scale_stride16(out: bytearray, scale_keys: dict, max_tick: int,
     # Lag-1 encoding: scale entry tick=N stores scale FOR tick=N-1.
     for entry_tick in range(2, max_tick + 1):
         sx, sy, sz = scale_at[entry_tick - 1]
-        out += struct.pack('<4f', sx, sy, sz, float(entry_tick))
+        out += struct.pack("<4f", sx, sy, sz, float(entry_tick))
         n_written += 16
 
     return n_written, transition
@@ -506,7 +557,7 @@ def _write_rotation_stride20(out: bytearray, rot_keys: dict, max_tick: int) -> i
     for tick in range(1, max_tick + 1):
         qx, qy, qz, qw = rot_at[tick]
         # Negate to match xcache convention (importer also negates on read)
-        out += struct.pack('<5f', float(tick), -qx, -qy, -qz, -qw)
+        out += struct.pack("<5f", float(tick), -qx, -qy, -qz, -qw)
         n_written += 20
 
     return n_written
@@ -538,22 +589,21 @@ def _write_skin_weights(out: bytearray, skin: List[Tuple]) -> int:
         when re-imported.
     """
     n = len(skin)
-    out += struct.pack('<I', n)
+    out += struct.pack("<I", n)
 
     # Extract per-entry (vi, weight, chunk) — defaulting chunk to 0
     # for 2-tuple legacy entries.
     parsed = []
     for entry in skin:
         if len(entry) == 3:
-            parsed.append((int(entry[0]), float(entry[1]),
-                           int(entry[2]) & 0xFFFF))
+            parsed.append((int(entry[0]), float(entry[1]), int(entry[2]) & 0xFFFF))
         else:
             parsed.append((int(entry[0]), float(entry[1]), 0))
 
     # Pad field = primary chunk = chunk of the FIRST entry (per the
     # lookback rule: entry [0]'s chunk is read from `pad`).
     primary_chunk = parsed[0][2] if parsed else 0
-    out += struct.pack('<H', primary_chunk)
+    out += struct.pack("<H", primary_chunk)
     n_written = 6
 
     for i, (vi, weight, chunk) in enumerate(parsed):
@@ -564,17 +614,14 @@ def _write_skin_weights(out: bytearray, skin: List[Tuple]) -> int:
         else:
             next_chunk = chunk
         # 10 bytes per entry: u16 vi, u16 pad, f32 weight, u16 trailer
-        out += struct.pack('<HHfH',
-                           vi & 0xFFFF,
-                           0,
-                           weight,
-                           next_chunk & 0xFFFF)
+        out += struct.pack("<HHfH", vi & 0xFFFF, 0, weight, next_chunk & 0xFFFF)
         n_written += 10
     return n_written
 
 
-def _write_bone_block_alignment_trailer(out: bytearray, block_start_byte_count: int,
-                                         data_start_alignment: int) -> int:
+def _write_bone_block_alignment_trailer(
+    out: bytearray, block_start_byte_count: int, data_start_alignment: int
+) -> int:
     """Write the small alignment trailer at the end of each bone's data block."""
     # Compute current position relative to file start; the alignment we want is
     current_len = len(out)
@@ -583,14 +630,14 @@ def _write_bone_block_alignment_trailer(out: bytearray, block_start_byte_count: 
     target = data_start_alignment % 4
     trailer_size = (target - current_len) % 4
     # Empirically the format always writes exactly 2 trailer bytes for animated
-    out += b'\x00' * trailer_size
+    out += b"\x00" * trailer_size
     return trailer_size
 
 
 def _write_no_anim_placeholder(out: bytearray) -> int:
     """Write the 16-byte 'anim placeholder' (identity quaternion) that
     appears in non-animated bones. Returns 16."""
-    out += struct.pack('<4f', 1.0, 0.0, 0.0, 0.0)
+    out += struct.pack("<4f", 1.0, 0.0, 0.0, 0.0)
     return 16
 
 
@@ -599,76 +646,99 @@ def _write_no_anim_placeholder(out: bytearray) -> int:
 # Constant 144-byte common material header from offset +0 of post-bone-header
 _MESH_COMMON_HEADER_PROLOGUE = bytes.fromhex(
     # +0..+27: 1.0 + 27 zeros
-    '0000803f' +
-    '00' * 28 +
+    "0000803f"
+    + "00" * 28
+    +
     # +32..+35: u32 = 1
-    '01000000' +
+    "01000000"
+    +
     # +36..+39: u32 = 2
-    '02000000' +
+    "02000000"
+    +
     # +40..+47: 8 zeros
-    '00' * 8
+    "00" * 8
 )
 assert len(_MESH_COMMON_HEADER_PROLOGUE) == 48
 
 # Bytes after the bbox (+68..+143 = 76 bytes)
 _MESH_COMMON_HEADER_EPILOGUE = bytes.fromhex(
     # +68..+71: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +72..+75: zeros
-    '00000000' +
+    "00000000"
+    +
     # +76..+91: 16 zeros
-    '00' * 16 +
+    "00" * 16
+    +
     # +92..+95: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +96..+111: 16 zeros
-    '00' * 16 +
+    "00" * 16
+    +
     # +112..+115: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +116..+127: 12 zeros
-    '00' * 12 +
+    "00" * 12
+    +
     # +128..+131: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +132..+143: 12-byte color sentinel (white, white, RGBA(0,0,0,255))
-    'ffffffff' 'ffffffff' '000000ff'
+    "ffffffff"
+    "ffffffff"
+    "000000ff"
 )
 assert len(_MESH_COMMON_HEADER_EPILOGUE) == 76
 
 # Color trailer: 0x808080FF (gray RGBA) — last 4 bytes of common header.
-_MESH_COMMON_HEADER_COLOR_TAIL = bytes.fromhex('808080ff')
+_MESH_COMMON_HEADER_COLOR_TAIL = bytes.fromhex("808080ff")
 
 # Post-color header for textured meshes: 16 bytes before the first texture entry.
 # (specular power 128.0 + 8 zeros + flag float 1.0)
 _MESH_TEX_PROLOGUE = bytes.fromhex(
-    '00000043' +    # f32 = 128.0
-    '00' * 8 +
-    '0000803f'      # f32 = 1.0
+    "00000043"  # f32 = 128.0
+    + "00" * 8
+    + "0000803f"  # f32 = 1.0
 )
 assert len(_MESH_TEX_PROLOGUE) == 16
 
 # Constant 60-byte tail for textured meshes.  Includes the trailing separator
 _MESH_TEX_TAIL = bytes.fromhex(
     # +0..+13: 14 zero bytes (incl. last-texture inter-separator absorbed into tail)
-    '00' * 14 +
+    "00" * 14
+    +
     # +14: 0x00
-    '00' +
+    "00"
+    +
     # +15..+18: 01 01 01 01
-    '01010101' +
+    "01010101"
+    +
     # +19..+22: 00 00 00 01
-    '00000001' +
+    "00000001"
+    +
     # +23..+26: 01 0f 01 00
-    '010f0100' +
+    "010f0100"
+    +
     # +27..+30: 4 zeros
-    '00000000' +
+    "00000000"
+    +
     # +31..+34: 0xFFFFFFFF sentinel
-    'ffffffff' +
+    "ffffffff"
+    +
     # +35: 0x01 marker
-    '01' +
+    "01"
+    +
     # +36..+39: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +40..+43: f32 = 1.0
-    '0000803f' +
+    "0000803f"
+    +
     # +44..+59: 16 zeros
-    '00' * 16
+    "00" * 16
 )
 assert len(_MESH_TEX_TAIL) == 60
 
@@ -688,25 +758,26 @@ def _write_mesh_common_header(out: bytearray, bbox_min, bbox_max) -> None:
     after the mesh FTM: a fixed prologue, the bbox (6 floats), a fixed
     epilogue, and the color tail."""
     out += _MESH_COMMON_HEADER_PROLOGUE
-    out += struct.pack('<6f', *bbox_min, *bbox_max)
+    out += struct.pack("<6f", *bbox_min, *bbox_max)
     out += _MESH_COMMON_HEADER_EPILOGUE
     out += _MESH_COMMON_HEADER_COLOR_TAIL
 
 
-def _write_mesh_texture_entry(out: bytearray, path: str,
-                               include_separator: bool) -> int:
+def _write_mesh_texture_entry(
+    out: bytearray, path: str, include_separator: bool
+) -> int:
     """Write one texture entry (presence flag + name_len + name + null) and
     optionally a 1-byte alignment separator. Returns the number of bytes
     written."""
-    name_bytes = path.encode('ascii')
-    out += struct.pack('<B', 0x01)
-    out += struct.pack('<I', len(name_bytes))
+    name_bytes = path.encode("ascii")
+    out += struct.pack("<B", 0x01)
+    out += struct.pack("<I", len(name_bytes))
     out += name_bytes
-    out += struct.pack('<B', 0x00)        # null terminator
+    out += struct.pack("<B", 0x00)  # null terminator
     written = 1 + 4 + len(name_bytes) + 1
     if include_separator:
-        out += struct.pack('<B', 0x00)    # alignment
-        out += struct.pack('<I', 1)       # separator
+        out += struct.pack("<B", 0x00)  # alignment
+        out += struct.pack("<I", 1)  # separator
         written += 5
     return written
 
@@ -715,49 +786,49 @@ def _write_mesh_block(out: bytearray, mesh: dict) -> None:
     """Write a complete mesh block (parent_idx + header + FTM + material/flags
     block + verts/normals/uvs/faces) in the .xcache binary format."""
     # Bone-style header
-    name_bytes = mesh['name'].encode('ascii')
-    out += struct.pack('<II', int(mesh.get('parent_idx', 0)), len(name_bytes))
+    name_bytes = mesh["name"].encode("ascii")
+    out += struct.pack("<II", int(mesh.get("parent_idx", 0)), len(name_bytes))
     out += name_bytes
-    out += struct.pack('<16f', *mesh['ftm'])
+    out += struct.pack("<16f", *mesh["ftm"])
 
     # 296-byte standard bone-style pre-anim header: 3 matrix copies (192)
     # + 40-byte prefix + 64-byte skin offset matrix (104) = 296 bytes.
-    ftm = mesh['ftm']
+    ftm = mesh["ftm"]
     bind_translation = (ftm[12], ftm[13], ftm[14])
-    out += struct.pack('<16f', *ftm)   # bind copy 1
-    out += struct.pack('<16f', *ftm)   # bind copy 2
-    out += struct.pack('<16f', *ftm)   # bind copy 3 (= FTM)
+    out += struct.pack("<16f", *ftm)  # bind copy 1
+    out += struct.pack("<16f", *ftm)  # bind copy 2
+    out += struct.pack("<16f", *ftm)  # bind copy 3 (= FTM)
     # Mesh frames are not real bones; they have no SkinWeights matrixOffset.
     # Use the bind_translation fallback path (= identity rotation + inverse
     # translation), which is what the original game files store here.
     _write_decoration_block(out, bind_translation=bind_translation)
 
     # 144-byte common material header
-    bbox_min, bbox_max = _compute_bbox(mesh.get('verts', []))
+    bbox_min, bbox_max = _compute_bbox(mesh.get("verts", []))
     _write_mesh_common_header(out, bbox_min, bbox_max)
 
     # Texture section
-    tex_paths = mesh.get('tex_paths') or []
+    tex_paths = mesh.get("tex_paths") or []
     if tex_paths:
         out += _MESH_TEX_PROLOGUE
         # Each texture entry, all followed by the separator (the separator
         for i, path in enumerate(tex_paths):
-            include_sep = (i < len(tex_paths) - 1)
+            include_sep = i < len(tex_paths) - 1
             _write_mesh_texture_entry(out, path, include_separator=include_sep)
         # Fixed 60-byte tail (begins with the post-last-texture separator)
         out += _MESH_TEX_TAIL
     else:
         # No textures: just 2 bytes of zero alignment to round out the block
-        out += b'\x00\x00'
+        out += b"\x00\x00"
 
     # Vertex stream
-    verts = mesh.get('verts', [])
-    normals = mesh.get('normals', [])
-    uvs = mesh.get('uvs', [])
+    verts = mesh.get("verts", [])
+    normals = mesh.get("normals", [])
+    uvs = mesh.get("uvs", [])
     n_verts = len(verts)
-    out += struct.pack('<I', n_verts)
+    out += struct.pack("<I", n_verts)
 
-    nan_w = struct.unpack('<f', b'\xff\xff\xff\xff')[0]   # quiet NaN as in source files
+    nan_w = struct.unpack("<f", b"\xff\xff\xff\xff")[0]  # quiet NaN as in source files
     for vi in range(n_verts):
         vx, vy, vz = verts[vi]
         if vi < len(normals):
@@ -769,50 +840,65 @@ def _write_mesh_block(out: bytearray, mesh: dict) -> None:
         else:
             u, v = 0.0, 0.0
         # 16 floats per vertex
-        out += struct.pack('<16f',
-            float(vx), float(vy), float(vz),         # [0..2] position
-            float(nx), float(ny), float(nz),         # [3..5] normal
-            nan_w,                                    # [6]    tangent W (NaN)
-            float(u), float(v),                       # [7..8] UV
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,        # [9..15] reserved
+        out += struct.pack(
+            "<16f",
+            float(vx),
+            float(vy),
+            float(vz),  # [0..2] position
+            float(nx),
+            float(ny),
+            float(nz),  # [3..5] normal
+            nan_w,  # [6]    tangent W (NaN)
+            float(u),
+            float(v),  # [7..8] UV
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,  # [9..15] reserved
         )
 
     # Index buffer
-    faces = mesh.get('faces', [])
+    faces = mesh.get("faces", [])
     total_indices = sum(len(f) for f in faces)
-    out += struct.pack('<II', 0, total_indices)
+    out += struct.pack("<II", 0, total_indices)
     for face in faces:
         for vi in face:
-            out += struct.pack('<H', int(vi) & 0xFFFF)
+            out += struct.pack("<H", int(vi) & 0xFFFF)
 
 
 # ---------- Bone-block top-level writer ----------
 
-def _write_bone_block(out: bytearray, bone: dict, animated: bool, max_tick: int) -> None:
+
+def _write_bone_block(
+    out: bytearray, bone: dict, animated: bool, max_tick: int
+) -> None:
     """Write a complete bone block including header (parent_idx, name_len, name),
     FTM (64 bytes), the 296-byte pre-anim decoration, and animation/skin data
     if present."""
     # Bone header: parent_idx, name_len, name
-    name_bytes = bone['name'].encode('ascii')
-    out += struct.pack('<II', int(bone['parent_idx']), len(name_bytes))
+    name_bytes = bone["name"].encode("ascii")
+    out += struct.pack("<II", int(bone["parent_idx"]), len(name_bytes))
     out += name_bytes
 
     # FrameTransformMatrix (parent-local, 64 bytes)
-    _write_4x4_dx(out, bone['ftm'])
+    _write_4x4_dx(out, bone["ftm"])
 
     # data_start position (for trailer alignment calculation)
     data_start_byte = len(out)
     data_start_align = data_start_byte % 4
 
     # Per-bone data block:
-    bind = bone['bind_pose']
+    bind = bone["bind_pose"]
     bind_translation = (bind[12], bind[13], bind[14])
 
     # 3 copies: bind, bind, FTM (the third one is parent-local, matches frame-1
     # walk pose for animated bones; for non-animated bones it's same as bind).
     _write_3x4_plus_translation(out, bind)
     _write_3x4_plus_translation(out, bind)
-    _write_3x4_plus_translation(out, bone['ftm'])
+    _write_3x4_plus_translation(out, bone["ftm"])
 
     # 104-byte block: 40-byte prefix + 64-byte SkinWeights matrixOffset
     # (= inverse of the bone's world-space bind pose). This is read back
@@ -821,19 +907,20 @@ def _write_bone_block(out: bytearray, bone: dict, animated: bool, max_tick: int)
     # weighted to non-root bones get the bone's full world transform
     # applied without subtracting their bind position, producing scattered
     # bones and wrong mesh deformation during animation.
-    skin_offset = bone.get('skin_offset')
+    skin_offset = bone.get("skin_offset")
     if skin_offset is None:
         skin_offset = _invert_dx_matrix(bind)
-    _write_decoration_block(out, skin_offset=skin_offset,
-                              bind_translation=bind_translation)
+    _write_decoration_block(
+        out, skin_offset=skin_offset, bind_translation=bind_translation
+    )
 
     # Animation channels (only if animated)
     if animated and max_tick >= 1:
         # Position block
-        _write_position_stride16(out, bone.get('pos_keys', {}), max_tick)
+        _write_position_stride16(out, bone.get("pos_keys", {}), max_tick)
 
         # Find last position record's f0,f1 for the transition entry between
-        pos_keys = bone.get('pos_keys', {})
+        pos_keys = bone.get("pos_keys", {})
         if pos_keys and max_tick >= 2:
             ticks = sorted(pos_keys.keys())
             prev_t = max_tick - 1
@@ -850,23 +937,28 @@ def _write_bone_block(out: bytearray, bone: dict, animated: bool, max_tick: int)
             lz = 0.0
 
         # Write scale block (preceded by the transition entry)
-        _write_scale_stride16(out, bone.get('scale_keys', {}), max_tick,
-                              last_pos_tick=max_tick,
-                              last_pos_y=ly, last_pos_z=lz)
+        _write_scale_stride16(
+            out,
+            bone.get("scale_keys", {}),
+            max_tick,
+            last_pos_tick=max_tick,
+            last_pos_y=ly,
+            last_pos_z=lz,
+        )
 
         # Closing transition entry between scale block and rotation block.
         # Empirically observed as 16 bytes of zeros.
-        out += struct.pack('<4f', 0.0, 0.0, 0.0, 0.0)
+        out += struct.pack("<4f", 0.0, 0.0, 0.0, 0.0)
 
         # Rotation block
-        _write_rotation_stride20(out, bone.get('rot_keys', {}), max_tick)
+        _write_rotation_stride20(out, bone.get("rot_keys", {}), max_tick)
     else:
         # Non-animated bone: write the 16-byte placeholder block instead of
         # animation records.
         _write_no_anim_placeholder(out)
 
     # Skin weights section (always present, may be empty)
-    _write_skin_weights(out, bone.get('skin', []))
+    _write_skin_weights(out, bone.get("skin", []))
 
     # Bone block alignment trailer (variable size: typically 2 bytes for animated
     # bones, more for non-animated to maintain mod-4 alignment per bone).
@@ -875,8 +967,10 @@ def _write_bone_block(out: bytearray, bone: dict, animated: bool, max_tick: int)
 
 # ---------- Top-level export entry point ----------
 
-def encode_xcache_bytes(bones: List[dict], anim_frame_count: int,
-                         meshes: Optional[List[dict]] = None) -> bytes:
+
+def encode_xcache_bytes(
+    bones: List[dict], anim_frame_count: int, meshes: Optional[List[dict]] = None
+) -> bytes:
     """Build a complete .xcache file as bytes from a list of bone dicts and
     optional mesh dicts. Writes the SEMS header, all bone blocks (with
     animation/skin data), and any mesh blocks."""
@@ -902,16 +996,21 @@ def encode_xcache_bytes(bones: List[dict], anim_frame_count: int,
     return bytes(out)
 
 
-def export_xcache_to_file(filepath: str, bones: List[dict], anim_frame_count: int,
-                          meshes: Optional[List[dict]] = None) -> int:
+def export_xcache_to_file(
+    filepath: str,
+    bones: List[dict],
+    anim_frame_count: int,
+    meshes: Optional[List[dict]] = None,
+) -> int:
     """Write an .xcache file to disk.  Returns the number of bytes written."""
     data = encode_xcache_bytes(bones, anim_frame_count, meshes=meshes)
-    with open(filepath, 'wb') as f:
+    with open(filepath, "wb") as f:
         f.write(data)
     return len(data)
 
 
 # Blender bridge
+
 
 def _matrix_to_dx_floats(mat):
     """Convert a mathutils.Matrix (4x4) into a list of 16 floats in DirectX
@@ -931,11 +1030,11 @@ def _build_xcache_parent_idx(bones_in_order, idx, parent_name):
         return 28
     # Find parent's index
     if parent_name is None:
-        return 0   # parent is root
+        return 0  # parent is root
     if idx >= 1 and bones_in_order[idx - 1].name == parent_name:
-        return 1   # parent is previous bone in the list
+        return 1  # parent is previous bone in the list
     if bones_in_order[0].name == parent_name:
-        return 0   # parent is root
+        return 0  # parent is root
     # Fall back to root sentinel — engine may complain but at least file parses
     return 0
 
@@ -971,9 +1070,15 @@ def _topo_sort_bones(armature_bones):
     return ordered
 
 
-def collect_bones_from_armature(arm_obj, bl_to_dx_3, inv_scale, scene=None,
-                                 anim_frame_start=1, anim_frame_end=1,
-                                 export_animation=False):
+def collect_bones_from_armature(
+    arm_obj,
+    bl_to_dx_3,
+    inv_scale,
+    scene=None,
+    anim_frame_start=1,
+    anim_frame_end=1,
+    export_animation=False,
+):
     """Extract bone dicts (suitable for encode_xcache_bytes) from a Blender
     armature. Each dict carries name, parent_idx, FTM (parent-local),
     bind_pose (world), skin_offset, and optional animation channels."""
@@ -998,24 +1103,28 @@ def collect_bones_from_armature(arm_obj, bl_to_dx_3, inv_scale, scene=None,
         if bone.parent is None:
             ftm_local = bind_world
         else:
-            parent_world = _bl_bone_to_dx_world(bone.parent.matrix_local, bl_to_dx_3, inv_scale)
+            parent_world = _bl_bone_to_dx_world(
+                bone.parent.matrix_local, bl_to_dx_3, inv_scale
+            )
             ftm_local = parent_world.inverted() @ bind_world
         ftm_floats = _matrix_to_dx_floats(ftm_local)
 
         parent_name = bone.parent.name if bone.parent else None
         parent_idx = _build_xcache_parent_idx(ordered, idx, parent_name)
 
-        bone_dicts.append({
-            'name': bone.name,
-            'parent_idx': parent_idx,
-            'ftm': ftm_floats,
-            'bind_pose': bind_floats,
-            'skin_offset': _invert_dx_matrix(bind_floats),
-            'pos_keys': {},
-            'scale_keys': {},
-            'rot_keys': {},
-            'skin': [],
-        })
+        bone_dicts.append(
+            {
+                "name": bone.name,
+                "parent_idx": parent_idx,
+                "ftm": ftm_floats,
+                "bind_pose": bind_floats,
+                "skin_offset": _invert_dx_matrix(bind_floats),
+                "pos_keys": {},
+                "scale_keys": {},
+                "rot_keys": {},
+                "skin": [],
+            }
+        )
 
     # Animation baking
     anim_frame_count = 0
@@ -1027,7 +1136,9 @@ def collect_bones_from_armature(arm_obj, bl_to_dx_3, inv_scale, scene=None,
         anim_frame_count = n_frames
 
         if n_frames >= 1:
-            for tick, fr in enumerate(range(anim_frame_start, anim_frame_end + 1), start=1):
+            for tick, fr in enumerate(
+                range(anim_frame_start, anim_frame_end + 1), start=1
+            ):
                 scene.frame_set(fr)
                 for pb in arm_obj.pose.bones:
                     if pb.name not in name_to_idx:
@@ -1039,9 +1150,9 @@ def collect_bones_from_armature(arm_obj, bl_to_dx_3, inv_scale, scene=None,
                         local_bl = parent_world.inverted() @ world_bl
                         dx_local = local_bl
                         rot = dx_local.to_3x3()
-                        t   = dx_local.to_translation()
-                        s   = dx_local.to_scale()
-                        q   = rot.to_quaternion()
+                        t = dx_local.to_translation()
+                        s = dx_local.to_scale()
+                        q = rot.to_quaternion()
                     else:
                         # ROOT: rotation is the pose-bone-local offset
                         # (matrix_basis); position/scale come from world.
@@ -1055,9 +1166,9 @@ def collect_bones_from_armature(arm_obj, bl_to_dx_3, inv_scale, scene=None,
                         s = dx_world.to_scale()
                         q = pb.matrix_basis.to_3x3().to_quaternion()
                     # The .xcache animation rotation convention stores the
-                    bone_dicts[bone_idx]['rot_keys']  [tick] = (-q.x, -q.y, -q.z, q.w)
-                    bone_dicts[bone_idx]['scale_keys'][tick] = (s.x, s.y, s.z)
-                    bone_dicts[bone_idx]['pos_keys']  [tick] = (t.x, t.y, t.z)
+                    bone_dicts[bone_idx]["rot_keys"][tick] = (-q.x, -q.y, -q.z, q.w)
+                    bone_dicts[bone_idx]["scale_keys"][tick] = (s.x, s.y, s.z)
+                    bone_dicts[bone_idx]["pos_keys"][tick] = (t.x, t.y, t.z)
             scene.frame_set(orig_frame)
 
     return bone_dicts, anim_frame_count
@@ -1078,12 +1189,12 @@ def collect_skin_weights(mesh_dicts, arm_obj, bone_dicts):
     so multi-mesh files round-trip with their sub-mesh structure
     intact.
     """
-    name_to_idx = {bd['name']: i for i, bd in enumerate(bone_dicts)}
+    name_to_idx = {bd["name"]: i for i, bd in enumerate(bone_dicts)}
     is_multi_mesh = len(mesh_dicts) > 1
 
     for chunk_idx, mesh_dict in enumerate(mesh_dicts):
-        mesh_obj = mesh_dict.get('_blender_obj')
-        bl_to_export = mesh_dict.get('_bl_to_export')
+        mesh_obj = mesh_dict.get("_blender_obj")
+        bl_to_export = mesh_dict.get("_bl_to_export")
         if mesh_obj is None or bl_to_export is None:
             # Mesh dict wasn't produced by our blender-side helper — skip
             continue
@@ -1094,7 +1205,7 @@ def collect_skin_weights(mesh_dicts, arm_obj, bone_dicts):
         if mesh_obj.parent is arm_obj:
             bound = True
         for mod in mesh_obj.modifiers:
-            if mod.type == 'ARMATURE' and getattr(mod, 'object', None) is arm_obj:
+            if mod.type == "ARMATURE" and getattr(mod, "object", None) is arm_obj:
                 bound = True
                 break
         if not bound:
@@ -1125,7 +1236,7 @@ def collect_skin_weights(mesh_dicts, arm_obj, bone_dicts):
                 w = float(grp.weight)
                 if w <= 0.0:
                     continue
-                bone_skin = bone_dicts[name_to_idx[bone_name]]['skin']
+                bone_skin = bone_dicts[name_to_idx[bone_name]]["skin"]
                 for export_vi in export_vis:
                     if is_multi_mesh:
                         bone_skin.append((export_vi, w, chunk_idx))
@@ -1133,8 +1244,9 @@ def collect_skin_weights(mesh_dicts, arm_obj, bone_dicts):
                         bone_skin.append((export_vi, w))
 
 
-def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
-                                  depsgraph=None, use_modifiers=True):
+def collect_meshes_from_blender(
+    mesh_objs, arm_obj, bl_to_dx_3, inv_scale, depsgraph=None, use_modifiers=True
+):
     """Walk Blender mesh objects and produce mesh dicts ready for
     encode_xcache_bytes (name, ftm, verts, normals, uvs, faces). Mesh
     data uses the raw bind-pose vertices (not depsgraph-evaluated, so
@@ -1149,7 +1261,7 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
         bm = bmesh.new()
         bm.from_mesh(me_src)
         bmesh.ops.triangulate(bm, faces=bm.faces[:])
-        me_work = bpy.data.meshes.new('_xcache_export_tmp')
+        me_work = bpy.data.meshes.new("_xcache_export_tmp")
         bm.to_mesh(me_work)
         bm.free()
         me_work.update()
@@ -1170,8 +1282,10 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
             for loop in me_work.loops:
                 vi = loop.vertex_index
                 raw_uv = uv_layer[loop.index].uv
-                uv_key = (round(float(raw_uv[0]), UV_ROUND),
-                          round(float(raw_uv[1]), UV_ROUND))
+                uv_key = (
+                    round(float(raw_uv[0]), UV_ROUND),
+                    round(float(raw_uv[1]), UV_ROUND),
+                )
                 groups = per_vert_uv_groups[vi]
                 # Find existing group with matching UV
                 gi = -1
@@ -1246,10 +1360,22 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
         # FTM matrix: identity for mesh frames in observed files (the mesh
         # geometry is already in armature/world space when emitted).
         ftm = [
-            1.0, 0.0, 0.0, 0.0,
-            0.0, 1.0, 0.0, 0.0,
-            0.0, 0.0, 1.0, 0.0,
-            0.0, 0.0, 0.0, 1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
         ]
 
         # Texture paths: pull from material slots if any of them have a
@@ -1267,15 +1393,15 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
             """
             if not p:
                 return p
-            p = p.replace('\\', '/')
-            while p.startswith('./') or p.startswith('//'):
+            p = p.replace("\\", "/")
+            while p.startswith("./") or p.startswith("//"):
                 p = p[2:]
             return p
 
         for mat in _effective_materials(obj):
             if mat is None:
                 continue
-            stashed = mat.get('_x_texture_filename')
+            stashed = mat.get("_x_texture_filename")
             if isinstance(stashed, str) and stashed:
                 stashed = _normalize_tex_path(stashed)
                 if stashed and stashed not in seen_paths:
@@ -1287,15 +1413,15 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
                 if tree is not None:
                     picked = None
                     for node in tree.nodes:
-                        if node.type != 'TEX_IMAGE':
+                        if node.type != "TEX_IMAGE":
                             continue
                         # Per-node engine-format path takes priority
-                        node_stash = node.get('_x_texture_filename')
+                        node_stash = node.get("_x_texture_filename")
                         if isinstance(node_stash, str) and node_stash:
                             picked = node_stash
                             break
                         if node.image is not None:
-                            p = node.image.filepath_raw or node.image.filepath or ''
+                            p = node.image.filepath_raw or node.image.filepath or ""
                             if p:
                                 picked = p
                                 break
@@ -1309,25 +1435,25 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
 
         # Mesh name: prefer the importer-stashed _x_mesh_name; else derive
         # from object name (append 'Geo' so it matches the engine convention).
-        mesh_name = (obj.data.get('_x_mesh_name')
-                     or obj.get('_x_mesh_name')
-                     or obj.name)
-        if not mesh_name.endswith('Geo'):
-            mesh_name = mesh_name + 'Geo'
+        mesh_name = obj.data.get("_x_mesh_name") or obj.get("_x_mesh_name") or obj.name
+        if not mesh_name.endswith("Geo"):
+            mesh_name = mesh_name + "Geo"
 
-        meshes.append({
-            'name': mesh_name,
-            'parent_idx': 0,
-            'ftm': ftm,
-            'verts': verts,
-            'normals': normals,
-            'uvs': uvs,
-            'faces': faces,
-            'tex_paths': tex_paths,
-            # Internal helpers consumed by collect_skin_weights so it can
-            '_bl_to_export': bl_to_export,
-            '_blender_obj': obj,
-        })
+        meshes.append(
+            {
+                "name": mesh_name,
+                "parent_idx": 0,
+                "ftm": ftm,
+                "verts": verts,
+                "normals": normals,
+                "uvs": uvs,
+                "faces": faces,
+                "tex_paths": tex_paths,
+                # Internal helpers consumed by collect_skin_weights so it can
+                "_bl_to_export": bl_to_export,
+                "_blender_obj": obj,
+            }
+        )
 
         # Cleanup
         bpy.data.meshes.remove(me_work)
@@ -1337,49 +1463,52 @@ def collect_meshes_from_blender(mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
     return meshes
 
 
-def export_xcache_from_blender(context, filepath,
-                                use_selection=False,
-                                use_mesh_modifiers=True,
-                                global_scale=1.0,
-                                axis_forward="-Z",
-                                axis_up="Y",
-                                export_armature=True,
-                                export_weights=True,
-                                export_animation=True,
-                                anim_frame_start=1,
-                                anim_frame_end=250,
-                                **_):
+def export_xcache_from_blender(
+    context,
+    filepath,
+    use_selection=False,
+    use_mesh_modifiers=True,
+    global_scale=1.0,
+    axis_forward="-Z",
+    axis_up="Y",
+    export_armature=True,
+    export_weights=True,
+    export_animation=True,
+    anim_frame_start=1,
+    anim_frame_end=250,
+    **_,
+):
     """Top-level entry point for exporting the current Blender scene state to
     a .xcache binary file. Collects bones (with animation), meshes, and
     skin weights, then writes the SEMS-format binary container."""
     scene = context.scene
     depsgraph = context.evaluated_depsgraph_get()
-    objects = (context.selected_objects
-               if use_selection else list(context.scene.objects))
+    objects = context.selected_objects if use_selection else list(context.scene.objects)
 
     # The importer applies M_imp = axis_fix @ axis_matrix_IMPORTER to incoming
     axis_base = _axis_matrix(axis_forward, axis_up)
-    axis_fix = Matrix.Rotation(math.pi, 4, 'Z')
+    axis_fix = Matrix.Rotation(math.pi, 4, "Z")
     conv_mat_4 = axis_base @ axis_fix
     bl_to_dx_3 = conv_mat_4.to_3x3()
     inv_scale = 1.0 / global_scale if global_scale != 0.0 else 1.0
 
-    armature_objs = [o for o in objects if o.type == 'ARMATURE']
-    mesh_objs = [o for o in objects if o.type == 'MESH']
+    armature_objs = [o for o in objects if o.type == "ARMATURE"]
+    mesh_objs = [o for o in objects if o.type == "MESH"]
 
     # Sort mesh objects by _x_submesh_idx if available, so split-mesh
     # imports round-trip with sub-meshes in their original order. Objects
     # without the property (e.g. user-created meshes) sort to the end,
     # preserving their relative scene order.
     def _submesh_key(o):
-        idx = o.get('_x_submesh_idx')
+        idx = o.get("_x_submesh_idx")
         if idx is None:
             return (1, 0, o.name)  # bucket 1: no stash, after stashed
         return (0, int(idx), o.name)
+
     mesh_objs.sort(key=_submesh_key)
 
     if not armature_objs and not mesh_objs:
-        return {'CANCELLED'}, ['No armature or mesh found in scene; nothing to export.']
+        return {"CANCELLED"}, ["No armature or mesh found in scene; nothing to export."]
 
     warnings = []
 
@@ -1387,15 +1516,19 @@ def export_xcache_from_blender(context, filepath,
     if armature_objs:
         arm_obj = armature_objs[0]
         bone_dicts, anim_frame_count = collect_bones_from_armature(
-            arm_obj, bl_to_dx_3, inv_scale, scene=scene,
+            arm_obj,
+            bl_to_dx_3,
+            inv_scale,
+            scene=scene,
             anim_frame_start=anim_frame_start,
             anim_frame_end=anim_frame_end,
             export_animation=export_animation,
         )
 
         # Drop any "mesh-bone" entries from the skeletal bone list — those
-        bone_dicts = [bd for bd in bone_dicts
-                      if not _is_mesh_bone_name(bd['name'])]
+        bone_dicts = [
+            bd for bd in bone_dicts if not cache_parser._is_mesh_bone_name(bd["name"])
+        ]
     else:
         # No armature: write an empty bone list with a single sentinel root.
         arm_obj = None
@@ -1411,8 +1544,12 @@ def export_xcache_from_blender(context, filepath,
     if mesh_objs:
         try:
             mesh_dicts = collect_meshes_from_blender(
-                mesh_objs, arm_obj, bl_to_dx_3, inv_scale,
-                depsgraph=depsgraph, use_modifiers=use_mesh_modifiers,
+                mesh_objs,
+                arm_obj,
+                bl_to_dx_3,
+                inv_scale,
+                depsgraph=depsgraph,
+                use_modifiers=use_mesh_modifiers,
             )
         except Exception as e:
             warnings.append(
@@ -1428,15 +1565,16 @@ def export_xcache_from_blender(context, filepath,
     # Strip internal-only keys before encoding so the encoder doesn't trip
     # on Blender objects that have no place in the output stream.
     for md in mesh_dicts:
-        md.pop('_bl_to_export', None)
-        md.pop('_blender_obj', None)
+        md.pop("_bl_to_export", None)
+        md.pop("_blender_obj", None)
 
-    export_xcache_to_file(filepath, bone_dicts, anim_frame_count,
-                          meshes=mesh_dicts or None)
+    export_xcache_to_file(
+        filepath, bone_dicts, anim_frame_count, meshes=mesh_dicts or None
+    )
 
     if mesh_dicts:
-        total_verts = sum(len(m['verts']) for m in mesh_dicts)
-        total_tris = sum(len(m['faces']) for m in mesh_dicts)
+        total_verts = sum(len(m["verts"]) for m in mesh_dicts)
+        total_tris = sum(len(m["faces"]) for m in mesh_dicts)
         warnings.append(
             f"Wrote {len(bone_dicts)} bone(s), {anim_frame_count} animation "
             f"frame(s), {len(mesh_dicts)} mesh(es) ({total_verts} vertices, "

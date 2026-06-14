@@ -2,13 +2,10 @@
 
 One module for all three cache formats:
 
-  * .objcache / .daecache  — static mesh caches (CacheMesh dataclass,
+  * .objcache / .daecache  -- static mesh caches (CacheMesh dataclass,
     parse_cache_file / write_cache_file).
-  * .xcache                — skinned-character SEMS format (XNode tree,
-    parse_xcache_file).  Frozen, reverse-engineered logic.
-
-The two halves share no names; the .xcache section is the former
-xcache_parser.py merged in verbatim.
+  * .xcache                -- skinned-character SEMS format (XNode tree,
+    parse_xcache_file).
 """
 
 import os
@@ -16,64 +13,66 @@ import re
 import math
 import struct
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Optional
 
 
 @dataclass
 class CacheMesh:
     """Parsed cache mesh, used as the exchange format between
     parser/writer and the Blender importer/exporter."""
+
     cache_type: str = "obj"
     aabb_min: tuple = (0.0, 0.0, 0.0)
     aabb_max: tuple = (0.0, 0.0, 0.0)
     # Per-asset tint, RGBA bytes. Objcache stores it at +0x40; daecache
     # doesn't have a tint slot.
-    tint_rgba: bytes = b'\xff\xff\xff\xff'
+    tint_rgba: bytes = b"\xff\xff\xff\xff"
     # Daecache-only bounding-radius-ish float at +0x44.
     dae_extent: float = 0.0
     # Up to three texture paths in the order: diffuse, normal, specular.
     textures: list = field(default_factory=list)
     # Per-vertex data; UVs are NOT V-flipped here.
     positions: list = field(default_factory=list)
-    normals:   list = field(default_factory=list)
-    colors:    list = field(default_factory=list)
-    uvs:       list = field(default_factory=list)
+    normals: list = field(default_factory=list)
+    colors: list = field(default_factory=list)
+    uvs: list = field(default_factory=list)
     # Daecache-only per-vertex extras. Tangents are zero in every shipped
     # sample; uv2/uv3 look like wind/LOD parameters and are constant
     # within a mesh.
-    tangents:  list = field(default_factory=list)
-    uv2:       list = field(default_factory=list)
-    uv3:       list = field(default_factory=list)
+    tangents: list = field(default_factory=list)
+    uv2: list = field(default_factory=list)
+    uv3: list = field(default_factory=list)
     # Triangle list, u16 indices.
     faces: list = field(default_factory=list)
 
 
-_TEXTURE_PATH_RE = re.compile(rb'Content/[\x20-\x7e]+?\.(?:dds|tga|png|jpg|bmp)',
-                              re.IGNORECASE)
+_TEXTURE_PATH_RE = re.compile(
+    rb"Content/[\x20-\x7e]+?\.(?:dds|tga|png|jpg|bmp)", re.IGNORECASE
+)
 
 
 def parse_cache_file(filepath: str) -> CacheMesh:
     """Parse .objcache or .daecache. Variant auto-detected from +0x10."""
-    with open(filepath, 'rb') as fh:
+    with open(filepath, "rb") as fh:
         data = fh.read()
 
-    if len(data) < 0x40 or data[:4] != b'SEMS':
+    if len(data) < 0x40 or data[:4] != b"SEMS":
         raise ValueError(f"Not a SEMS cache file: magic={data[:4]!r}, size={len(data)}")
 
-    type_flag = struct.unpack('<I', data[0x10:0x14])[0]
+    type_flag = struct.unpack("<I", data[0x10:0x14])[0]
     if type_flag == 2:
         cache_type, vert_stride = "dae", 64
     else:
         cache_type, vert_stride = "obj", 36
 
     out = CacheMesh(cache_type=cache_type)
-    out.aabb_min = struct.unpack('<3f', data[0x1C:0x28])
-    out.aabb_max = struct.unpack('<3f', data[0x28:0x34])
+    out.aabb_min = struct.unpack("<3f", data[0x1C:0x28])
+    out.aabb_max = struct.unpack("<3f", data[0x28:0x34])
 
     # +0x34..+0x54: variant-specific header tail. Both end with the 1.0
     # scale float at +0x50 followed by the texture section at +0x54.
     if cache_type == "dae":
-        out.dae_extent = struct.unpack('<f', data[0x44:0x48])[0]
+        out.dae_extent = struct.unpack("<f", data[0x44:0x48])[0]
     else:
         out.tint_rgba = data[0x40:0x44]
 
@@ -86,13 +85,13 @@ def parse_cache_file(filepath: str) -> CacheMesh:
         path = m.group()
         if m.start() < 4:
             continue
-        prefix_len = struct.unpack('<I', data[m.start() - 4:m.start()])[0]
+        prefix_len = struct.unpack("<I", data[m.start() - 4 : m.start()])[0]
         if prefix_len != len(path):
             continue
         try:
-            out.textures.append(path.decode('utf-8'))
+            out.textures.append(path.decode("utf-8"))
         except UnicodeDecodeError:
-            out.textures.append(path.decode('latin-1'))
+            out.textures.append(path.decode("latin-1"))
         last_path_end = max(last_path_end, m.end())
 
     # Find the vertex-count u32 by trying candidate offsets after the
@@ -102,26 +101,26 @@ def parse_cache_file(filepath: str) -> CacheMesh:
     if vc_off is None:
         raise ValueError(f"Could not locate vertex section in {filepath}")
 
-    n_verts = struct.unpack('<I', data[vc_off:vc_off + 4])[0]
+    n_verts = struct.unpack("<I", data[vc_off : vc_off + 4])[0]
     verts_start = vc_off + 4
 
     for i in range(n_verts):
         base = verts_start + i * vert_stride
-        out.positions.append(struct.unpack('<3f', data[base + 0:base + 12]))
-        out.normals.append  (struct.unpack('<3f', data[base + 12:base + 24]))
-        out.colors.append   (data[base + 24:base + 28])
-        out.uvs.append      (struct.unpack('<2f', data[base + 28:base + 36]))
+        out.positions.append(struct.unpack("<3f", data[base + 0 : base + 12]))
+        out.normals.append(struct.unpack("<3f", data[base + 12 : base + 24]))
+        out.colors.append(data[base + 24 : base + 28])
+        out.uvs.append(struct.unpack("<2f", data[base + 28 : base + 36]))
         if cache_type == "dae":
-            out.tangents.append(struct.unpack('<3f', data[base + 36:base + 48]))
-            out.uv2.append     (struct.unpack('<2f', data[base + 48:base + 56]))
-            out.uv3.append     (struct.unpack('<2f', data[base + 56:base + 64]))
+            out.tangents.append(struct.unpack("<3f", data[base + 36 : base + 48]))
+            out.uv2.append(struct.unpack("<2f", data[base + 48 : base + 56]))
+            out.uv3.append(struct.unpack("<2f", data[base + 56 : base + 64]))
 
     idx_off = verts_start + n_verts * vert_stride
-    idx_count = struct.unpack('<I', data[idx_off:idx_off + 4])[0]
+    idx_count = struct.unpack("<I", data[idx_off : idx_off + 4])[0]
     idx_start = idx_off + 4
     for f in range(idx_count // 3):
         base = idx_start + f * 6
-        out.faces.append(struct.unpack('<3H', data[base:base + 6]))
+        out.faces.append(struct.unpack("<3H", data[base : base + 6]))
 
     return out
 
@@ -136,20 +135,20 @@ def _locate_vertex_count(data: bytes, scan_start: int, stride: int) -> Optional[
     """
     file_len = len(data)
     for vc_off in range(scan_start, min(scan_start + 256, file_len - 8)):
-        n_verts = struct.unpack('<I', data[vc_off:vc_off + 4])[0]
+        n_verts = struct.unpack("<I", data[vc_off : vc_off + 4])[0]
         if n_verts < 3 or n_verts > 5_000_000:
             continue
         verts_start = vc_off + 4
         idx_off = verts_start + n_verts * stride
         if idx_off + 4 >= file_len:
             continue
-        idx_count = struct.unpack('<I', data[idx_off:idx_off + 4])[0]
+        idx_count = struct.unpack("<I", data[idx_off : idx_off + 4])[0]
         if idx_count == 0 or idx_count % 3 != 0 or idx_count > 5_000_000:
             continue
         if idx_off + 4 + idx_count * 2 != file_len:
             continue
         try:
-            nx, ny, nz = struct.unpack('<3f', data[verts_start + 12:verts_start + 24])
+            nx, ny, nz = struct.unpack("<3f", data[verts_start + 12 : verts_start + 24])
         except struct.error:
             continue
         if 0.95 < nx * nx + ny * ny + nz * nz < 1.05:
@@ -160,68 +159,68 @@ def _locate_vertex_count(data: bytes, scan_start: int, stride: int) -> Optional[
 def write_cache_file(mesh: CacheMesh, filepath: str) -> None:
     """Serialize a CacheMesh back to .objcache or .daecache."""
     cache_type = mesh.cache_type
-    vert_stride = 64 if cache_type == "dae" else 36
     out = bytearray()
 
     # Common header +0x00..+0x34
-    out += b'SEMS'
-    out += b'\x00' * 8
-    out += struct.pack('<I', 1)                              # version
-    out += struct.pack('<I', 2 if cache_type == "dae" else 0)
-    out += b'\x00' * 8
-    out += struct.pack('<3f', *mesh.aabb_min)
-    out += struct.pack('<3f', *mesh.aabb_max)
+    out += b"SEMS"
+    out += b"\x00" * 8
+    out += struct.pack("<I", 1)  # version
+    out += struct.pack("<I", 2 if cache_type == "dae" else 0)
+    out += b"\x00" * 8
+    out += struct.pack("<3f", *mesh.aabb_min)
+    out += struct.pack("<3f", *mesh.aabb_max)
 
     # Variant-specific tail +0x34..+0x54 (32 bytes). Reconstructs the
     # constant flag bytes observed across every sample and slots in the
     # per-file tint (obj) or extent (dae).
     if cache_type == "dae":
-        out += b'\x00\x00\x00\xff\xff\xff\xff\xff'
-        out += b'\x00\x00\x00\xff\xff\xff\xff\xff'
-        out += struct.pack('<f', mesh.dae_extent)
-        out += b'\x00' * 8
-        out += struct.pack('<f', 1.0)
+        out += b"\x00\x00\x00\xff\xff\xff\xff\xff"
+        out += b"\x00\x00\x00\xff\xff\xff\xff\xff"
+        out += struct.pack("<f", mesh.dae_extent)
+        out += b"\x00" * 8
+        out += struct.pack("<f", 1.0)
     else:
-        out += b'\x00\x00\x00\xff\xff\xff\xff\xff'
-        out += b'\x00\x00\x00\x00'
-        out += (mesh.tint_rgba + b'\xff\xff\xff\xff')[:4]
-        out += b'\x00\x00\x00\x43'
-        out += b'\x00' * 8
-        out += struct.pack('<f', 1.0)
+        out += b"\x00\x00\x00\xff\xff\xff\xff\xff"
+        out += b"\x00\x00\x00\x00"
+        out += (mesh.tint_rgba + b"\xff\xff\xff\xff")[:4]
+        out += b"\x00\x00\x00\x43"
+        out += b"\x00" * 8
+        out += struct.pack("<f", 1.0)
 
     # Texture section + standard pre-vertex metadata blob.
     out += _synthesize_texture_section(mesh.textures)
 
     # Vertex stream.
     n_verts = len(mesh.positions)
-    out += struct.pack('<I', n_verts)
+    out += struct.pack("<I", n_verts)
 
     def _color(i):
         if i < len(mesh.colors) and mesh.colors[i]:
-            return (mesh.colors[i] + b'\xff\xff\xff\xff')[:4]
-        return b'\xff\xff\xff\xff'
+            return (mesh.colors[i] + b"\xff\xff\xff\xff")[:4]
+        return b"\xff\xff\xff\xff"
 
     def _uv(arr, i):
         return arr[i] if i < len(arr) else (0.0, 0.0)
 
     for i in range(n_verts):
-        out += struct.pack('<3f', *mesh.positions[i])
-        out += struct.pack('<3f', *(mesh.normals[i] if i < len(mesh.normals)
-                                    else (0.0, 0.0, 1.0)))
+        out += struct.pack("<3f", *mesh.positions[i])
+        out += struct.pack(
+            "<3f", *(mesh.normals[i] if i < len(mesh.normals) else (0.0, 0.0, 1.0))
+        )
         out += _color(i)
-        out += struct.pack('<2f', *_uv(mesh.uvs, i))
+        out += struct.pack("<2f", *_uv(mesh.uvs, i))
         if cache_type == "dae":
             tn = mesh.tangents[i] if i < len(mesh.tangents) else (0.0, 0.0, 0.0)
-            out += struct.pack('<3f', *tn)
-            out += struct.pack('<2f', *_uv(mesh.uv2, i))
-            out += struct.pack('<2f', *_uv(mesh.uv3, i))
+            out += struct.pack("<3f", *tn)
+            out += struct.pack("<2f", *_uv(mesh.uv2, i))
+            out += struct.pack("<2f", *_uv(mesh.uv3, i))
 
     # Index stream.
-    out += struct.pack('<I', len(mesh.faces) * 3)
+    out += struct.pack("<I", len(mesh.faces) * 3)
     for tri in mesh.faces:
-        out += struct.pack('<3H', tri[0], tri[1], tri[2])
+        out += struct.pack("<3H", tri[0], tri[1], tri[2])
 
-    with open(filepath, 'wb') as fh:
+    with open(filepath, "wb") as fh:
         fh.write(out)
 
 
@@ -233,17 +232,17 @@ def _synthesize_texture_section(textures: list) -> bytes:
     # joined by a 6-byte zero pad.
     for i, path in enumerate(textures[:3]):
         if i > 0:
-            out += b'\x00' * 6
-        path_b = path.encode('utf-8')
-        out += b'\x01'
-        out += struct.pack('<I', len(path_b))
+            out += b"\x00" * 6
+        path_b = path.encode("utf-8")
+        out += b"\x01"
+        out += struct.pack("<I", len(path_b))
         out += path_b
     # Trailing metadata, byte-for-byte from the shipped samples.
-    out += b'\x00' * 12
-    out += b'\x01\x01\x01\x01\x00\x00\x01\x01\x01\x0f\x01'
-    out += b'\x00\x00\x00\x00\x00\xff\xff\xff\xff'
-    out += b'\x01\x00\x00\x80\x3f\x00\x00\x80\x3f'
-    out += b'\x00' * 8
+    out += b"\x00" * 12
+    out += b"\x01\x01\x01\x01\x00\x00\x01\x01\x01\x0f\x01"
+    out += b"\x00\x00\x00\x00\x00\xff\xff\xff\xff"
+    out += b"\x01\x00\x00\x80\x3f\x00\x00\x80\x3f"
+    out += b"\x00" * 8
     return bytes(out)
 
 
@@ -254,31 +253,31 @@ def _synthesize_texture_section(textures: list) -> bytes:
 # corpus); only its module header was merged — the logic is unchanged.
 # ============================================================================
 
-TOK_WORD   = "WORD"
-TOK_STR    = "STR"
-TOK_NUM    = "NUM"
+TOK_WORD = "WORD"
+TOK_STR = "STR"
+TOK_NUM = "NUM"
 TOK_LBRACE = "{"
 TOK_RBRACE = "}"
-TOK_SEMI   = ";"
-TOK_COMMA  = ","
-TOK_EOF    = "EOF"
+TOK_SEMI = ";"
+TOK_COMMA = ","
+TOK_EOF = "EOF"
 
 
 class XNode:
     __slots__ = ("kind", "name", "children", "values", "meta")
 
     def __init__(self, kind, name=""):
-        self.kind     = kind
-        self.name     = name
+        self.kind = kind
+        self.name = name
         self.children = []
-        self.values   = []
+        self.values = []
         # Optional metadata dict for parser→importer side-channel
         # info that doesn't belong in the .x format itself (e.g. the
         # original mesh name when a multi-material Mesh has been split
         # into per-material sub-meshes, for round-trip export merge).
         # Stays None unless explicitly populated; keeps memory cost
         # negligible for the typical case.
-        self.meta: 'Optional[dict]' = None
+        self.meta: "Optional[dict]" = None
 
     def child(self, *kinds):
         for c in self.children:
@@ -299,53 +298,28 @@ class XNode:
         return [v for t, v in self.values if t == TOK_STR]
 
     def __repr__(self):
-        return (f"<XNode {self.kind!r} name={self.name!r} "
-                f"vals={len(self.values)} children={len(self.children)}>")
-
-
-def _num(v) -> tuple:
-    return (TOK_NUM, repr(float(v)))
-
-
-def _str(s: str) -> tuple:
-    return (TOK_STR, s)
-
-
-def _word(w: str) -> tuple:
-    return (TOK_WORD, w)
-
-
-def _make_ftm_node(matrix_flat: list[float]) -> XNode:
-    node = XNode("FrameTransformMatrix", "")
-    for v in matrix_flat:
-        node.values.append(_num(v))
-    return node
-
-
-def _make_frame_node(name: str, ftm: list[float], children: list) -> XNode:
-    node = XNode("Frame", name)
-    node.children.append(_make_ftm_node(ftm))
-    node.children.extend(children)
-    return node
-
-
+        return (
+            f"<XNode {self.kind!r} name={self.name!r} "
+            f"vals={len(self.values)} children={len(self.children)}>"
+        )
 
 
 # =============================================================================
 # Bugsnax .xcache (SEMS) binary format
 # =============================================================================
 
+
 def _u32(data: bytes, offset: int) -> int:
-    return struct.unpack_from('<I', data, offset)[0]
+    return struct.unpack_from("<I", data, offset)[0]
 
 
 def _f32(data: bytes, offset: int) -> float:
-    return struct.unpack_from('<f', data, offset)[0]
+    return struct.unpack_from("<f", data, offset)[0]
 
 
 def _read_matrix(data: bytes, offset: int):
     """Read a 4×4 float32 matrix at *offset* (64 bytes). Returns a flat list of 16 floats."""
-    return list(struct.unpack_from('<16f', data, offset))
+    return list(struct.unpack_from("<16f", data, offset))
 
 
 def _find_vertex_block(data: bytes, start: int, end: int):
@@ -394,8 +368,7 @@ def _find_vertex_block(data: bytes, start: int, end: int):
         if abs(fx) > 10000 or abs(fy) > 10000 or abs(fz) > 10000:
             return False, False, False, False, False
         # Denormalized-float check (catches misaligned reads)
-        if (0.0 < abs(fx) < 1e-15 or 0.0 < abs(fy) < 1e-15
-                or 0.0 < abs(fz) < 1e-15):
+        if 0.0 < abs(fx) < 1e-15 or 0.0 < abs(fy) < 1e-15 or 0.0 < abs(fz) < 1e-15:
             return False, False, False, False, False
         pos_ok = True
         nonzero = (abs(fx) + abs(fy) + abs(fz)) >= 1e-4
@@ -403,11 +376,15 @@ def _find_vertex_block(data: bytes, start: int, end: int):
         nx = _f32(data, off + 12)
         ny = _f32(data, off + 16)
         nz = _f32(data, off + 20)
-        if (math.isnan(nx) or math.isnan(ny) or math.isnan(nz)
-                or any(abs(v) > 1.5 for v in (nx, ny, nz))):
+        if (
+            math.isnan(nx)
+            or math.isnan(ny)
+            or math.isnan(nz)
+            or any(abs(v) > 1.5 for v in (nx, ny, nz))
+        ):
             unit_normal = False
         else:
-            nmag = math.sqrt(nx*nx + ny*ny + nz*nz)
+            nmag = math.sqrt(nx * nx + ny * ny + nz * nz)
             unit_normal = 0.95 < nmag < 1.05
         # Color at u32 [24:28] in S3DVertexTangents. Bugsnax verts
         # are always OPAQUE (alpha byte = 0xFF in the high nibble of
@@ -419,7 +396,7 @@ def _find_vertex_block(data: bytes, start: int, end: int):
         # 1/256 chance of alpha=0xFF, but multiplied by passing the
         # position/normal/UV checks the false-positive rate is
         # effectively zero).
-        color = struct.unpack_from('<I', data, off + 24)[0]
+        color = struct.unpack_from("<I", data, off + 24)[0]
         color_opaque = ((color >> 24) & 0xFF) == 0xFF
         # UV at floats [7:9]: most files use 0..1 or -1..1, but some
         # outliers exceed that; tolerate up to ±10 (rejects garbage
@@ -432,10 +409,10 @@ def _find_vertex_block(data: bytes, start: int, end: int):
             valid_uv = abs(uu) < 10.0 and abs(vv) < 10.0
         return pos_ok, nonzero, unit_normal, valid_uv, color_opaque
 
-    PROBE_N = 5      # how many vertices to look at for confidence
+    PROBE_N = 5  # how many vertices to look at for confidence
 
     for scan in range(start, end):
-        candidate = struct.unpack_from('<I', data, scan)[0]
+        candidate = struct.unpack_from("<I", data, scan)[0]
         # Bugsnax characters are typically 1k-50k verts; props (flags,
         # signs, etc.) can be as small as ~20. Below 20 the false-positive
         # rate gets too high — small integers in non-vertex byte regions
@@ -470,6 +447,7 @@ def _find_vertex_block(data: bytes, start: int, end: int):
 
 # Bone / skeleton parsing
 
+
 def _parse_bones(data: bytes, bone_count: int, start: int):
     """Walk *bone_count* bone entries starting at *start*."""
     bones = []
@@ -480,15 +458,15 @@ def _parse_bones(data: bytes, bone_count: int, start: int):
             break
 
         parent_idx = _u32(data, offset)
-        name_len   = _u32(data, offset + 4)
+        name_len = _u32(data, offset + 4)
 
         if name_len < 1 or name_len > 256:
             break  # corrupt or non-bone data
 
-        name_bytes = data[offset + 8: offset + 8 + name_len]
-        if not all(0x20 <= b < 0x7f for b in name_bytes):
+        name_bytes = data[offset + 8 : offset + 8 + name_len]
+        if not all(0x20 <= b < 0x7F for b in name_bytes):
             break
-        name = name_bytes.decode('ascii')
+        name = name_bytes.decode("ascii")
 
         # The byte at (offset + 8 + name_len) is the FIRST byte of the FTM
         ftm_offset = offset + 8 + name_len
@@ -501,8 +479,8 @@ def _parse_bones(data: bytes, bone_count: int, start: int):
         bind_off = ftm_offset + 64
         bind_pose = [0.0] * 16
         if bind_off + 64 <= len(data):
-            mat3x4 = struct.unpack_from('<12f', data, bind_off)
-            trans4 = struct.unpack_from('<4f',  data, bind_off + 48)
+            mat3x4 = struct.unpack_from("<12f", data, bind_off)
+            trans4 = struct.unpack_from("<4f", data, bind_off + 48)
             # Rows 0..2 from the 3x4 block, row 3 from the translation block.
             bind_pose[:12] = mat3x4
             bind_pose[12:] = trans4
@@ -518,20 +496,22 @@ def _parse_bones(data: bytes, bone_count: int, start: int):
         skin_offset_at = ftm_offset + 296
         skin_offset = [0.0] * 16
         if skin_offset_at + 64 <= len(data):
-            skin_offset = list(struct.unpack_from('<16f', data, skin_offset_at))
+            skin_offset = list(struct.unpack_from("<16f", data, skin_offset_at))
         else:
             # Fallback: identity (zero-matrix would be singular and
             # break skinning entirely)
             skin_offset[0] = skin_offset[5] = skin_offset[10] = skin_offset[15] = 1.0
 
-        bones.append({
-            'name':        name,
-            'parent':      parent_idx,
-            'ftm':         ftm,
-            'bind_pose':   bind_pose,        # 4×4 world-space bind pose (DX row-major)
-            'skin_offset': skin_offset,      # 4×4 skinning offset = inv(bone-bind in mesh space)
-            'data_start':  ftm_offset + 64,
-        })
+        bones.append(
+            {
+                "name": name,
+                "parent": parent_idx,
+                "ftm": ftm,
+                "bind_pose": bind_pose,  # 4×4 world-space bind pose (DX row-major)
+                "skin_offset": skin_offset,  # 4×4 skinning offset = inv(bone-bind in mesh space)
+                "data_start": ftm_offset + 64,
+            }
+        )
 
         # Advance to next bone: we don't know the anim-data size, so we scan
         # forward for the next valid bone-header pattern.
@@ -565,15 +545,15 @@ def _find_next_bone_header(data: bytes, search_from: int) -> Optional[int]:
     end = min(search_from + 5_000_000, len(data) - 16)
     for off in range(search_from, end):
         parent = _u32(data, off)
-        nlen   = _u32(data, off + 4)
+        nlen = _u32(data, off + 4)
         if parent > 60 or nlen < 3 or nlen > 80:
             continue
-        nb = data[off + 8: off + 8 + nlen]
+        nb = data[off + 8 : off + 8 + nlen]
         if len(nb) != nlen:
             continue
-        if not all(0x20 <= b < 0x7f for b in nb):
+        if not all(0x20 <= b < 0x7F for b in nb):
             continue
-        name = nb.decode('ascii')
+        name = nb.decode("ascii")
         if not (name[0].isupper() or name[0].isalpha()):
             continue
         return off
@@ -581,6 +561,7 @@ def _find_next_bone_header(data: bytes, search_from: int) -> Optional[int]:
 
 
 # Animation extraction
+
 
 def _find_rot20_section(data: bytes, search_start: int, search_end: int):
     """Scan for a stride-20 block of unit quaternion keyframes."""
@@ -591,14 +572,17 @@ def _find_rot20_section(data: bytes, search_start: int, search_end: int):
         for i in range(5):
             off = start + i * 20
             if off + 20 > len(data):
-                ok = False; break
-            f = struct.unpack_from('<5f', data, off)
+                ok = False
+                break
+            f = struct.unpack_from("<5f", data, off)
             frame = f[0]
-            qlen  = math.sqrt(f[1]*f[1] + f[2]*f[2] + f[3]*f[3] + f[4]*f[4])
+            qlen = math.sqrt(f[1] * f[1] + f[2] * f[2] + f[3] * f[3] + f[4] * f[4])
             if not (0 < frame < 300 and abs(qlen - 1.0) < 0.01):
-                ok = False; break
+                ok = False
+                break
             if frame <= prev_frame:
-                ok = False; break
+                ok = False
+                break
             prev_frame = frame
         if not ok:
             continue
@@ -608,10 +592,10 @@ def _find_rot20_section(data: bytes, search_start: int, search_end: int):
         cur = start
         prev_frame = -1
         while cur + 20 <= len(data):
-            f = struct.unpack_from('<5f', data, cur)
+            f = struct.unpack_from("<5f", data, cur)
             if not all(math.isfinite(v) for v in f):
                 break
-            qlen = math.sqrt(f[1]*f[1] + f[2]*f[2] + f[3]*f[3] + f[4]*f[4])
+            qlen = math.sqrt(f[1] * f[1] + f[2] * f[2] + f[3] * f[3] + f[4] * f[4])
             if abs(qlen - 1.0) > 0.05:
                 break
             frame = f[0]
@@ -646,7 +630,7 @@ def _find_skin_block(data: bytes, search_start: int, search_end: int):
     """
     end = min(search_end - 6, search_start + 100_000)
     for off in range(search_start, end):
-        count = struct.unpack_from('<I', data, off)[0]
+        count = struct.unpack_from("<I", data, off)[0]
         # Upper bound is a sanity gate against locking onto a garbage u32,
         # not a real format limit. The original 20k cap silently discarded
         # the body skin of high-vertex props: Balloon's Root / BalloonRotation
@@ -658,7 +642,7 @@ def _find_skin_block(data: bytes, search_start: int, search_end: int):
         # block_end bounds check; the cap only needs to stay well under a u32.
         if count < 2 or count > 500_000:
             continue
-        pad = struct.unpack_from('<H', data, off + 4)[0]
+        pad = struct.unpack_from("<H", data, off + 4)[0]
         if pad > 255:
             continue
         block_end = off + 6 + count * 10
@@ -673,29 +657,35 @@ def _find_skin_block(data: bytes, search_start: int, search_end: int):
         first_trailer = None
         for j in range(sample_n):
             eo = off + 6 + j * 10
-            vi = struct.unpack_from('<I', data, eo)[0]
-            w  = struct.unpack_from('<f', data, eo + 4)[0]
-            t  = struct.unpack_from('<H', data, eo + 8)[0]
+            vi = struct.unpack_from("<I", data, eo)[0]
+            w = struct.unpack_from("<f", data, eo + 4)[0]
+            t = struct.unpack_from("<H", data, eo + 8)[0]
             # Sentinel — end of block, accept as termination
             if vi == 0x80000000:
                 break
             if not math.isfinite(w):
-                ok = False; break
+                ok = False
+                break
             if not (0.0 <= w <= 1.001):
-                ok = False; break
+                ok = False
+                break
             if 0 < w < 1e-5:
-                ok = False; break
+                ok = False
+                break
             if w >= 1e-5:
                 n_real_weights += 1
             if vi >= 100_000:
-                ok = False; break
+                ok = False
+                break
             if t > 255:
-                ok = False; break
+                ok = False
+                break
             if first_trailer is None:
                 first_trailer = t
                 # First-trailer should equal pad for real blocks
                 if t != pad:
-                    ok = False; break
+                    ok = False
+                    break
         if ok and n_real_weights >= max(1, sample_n // 2):
             return off
     return None
@@ -728,14 +718,14 @@ def _read_skin_weights(data: bytes, offset: int, bone_end: int):
     """
     if offset + 6 > bone_end:
         return [], 0, []
-    count = struct.unpack_from('<I', data, offset)[0]
+    count = struct.unpack_from("<I", data, offset)[0]
     # See _find_skin_block: the cap is a garbage gate, not a format limit.
     # Large props (Balloon's body bones at 70k–118k weights) legitimately
     # exceed the old 50k value. The entries_start bounds check below keeps a
     # bogus count from reading past the bone region.
     if count == 0 or count > 500_000:
         return [], 0, []
-    pad = struct.unpack_from('<H', data, offset + 4)[0]
+    pad = struct.unpack_from("<H", data, offset + 4)[0]
     if pad > 255:
         return [], 0, []
     entries_start = offset + 6
@@ -771,16 +761,16 @@ def _read_skin_weights(data: bytes, offset: int, bone_end: int):
         off = entries_start + i * 10
         if off + 10 > len(data):
             break
-        vi = struct.unpack_from('<I', data, off)[0]
+        vi = struct.unpack_from("<I", data, off)[0]
         # End-of-data sentinel: vi == 0x80000000 marks end of real entries.
         if vi == SENTINEL_VI:
             break
-        trailer = struct.unpack_from('<H', data, off + 8)[0]
+        trailer = struct.unpack_from("<H", data, off + 8)[0]
         # Validate trailer is a plausible chunk index (small int).
         # Anything > 255 is parse garbage.
         if trailer > 255:
             break
-        w = struct.unpack_from('<f', data, off + 4)[0]
+        w = struct.unpack_from("<f", data, off + 4)[0]
         if not math.isfinite(w) or w < 0 or w > 1.0 + 1e-4:
             break
         # vi as u32 — must be a reasonable chunk-relative index.
@@ -790,9 +780,12 @@ def _read_skin_weights(data: bytes, offset: int, bone_end: int):
         # while the chunk index stays the same. This signals
         # continuation onto another mesh WITHIN THE SAME CHUNK
         # (Honey's root, Beffica's UpperJaw).
-        if (prev_vi >= 100 and vi < prev_vi - 100
-                and influences
-                and influences[-1][2] == current_chunk):
+        if (
+            prev_vi >= 100
+            and vi < prev_vi - 100
+            and influences
+            and influences[-1][2] == current_chunk
+        ):
             resets.append(len(influences))
         # Record THIS entry with `current_chunk` (looked up from
         # previous entry's trailer or `pad` for entry 0). The
@@ -808,10 +801,10 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     """Extract position, scale, and rotation animation keyframes plus skin
     weights from a single bone's data section in a .xcache file. Returns
     a dict with keys 'pos', 'scale', 'rot', 'skin', 'skin_pad', 'skin_resets'."""
-    anim_start = bone['data_start']
-    anim_end   = next_bone_start if next_bone_start else len(data)
+    anim_start = bone["data_start"]
+    anim_end = next_bone_start if next_bone_start else len(data)
 
-    pos_keys   = {}
+    pos_keys = {}
     scale_keys = {}
 
     # --- Find stride-16 section ---
@@ -831,15 +824,15 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     #   1 ≤ tick ≤ 100000    — animations don't have 100k frames
     #   |Δtick - 1| ≤ 0.5    — consecutive ticks differ by 1 exactly,
     #                          but allow rounding noise
-    POS_BOUND   = 10000.0
-    TICK_MAX    = 100_000
-    TICK_TOL    = 0.5
-    LOOKAHEAD   = 4         # records to validate before accepting start
+    POS_BOUND = 10000.0
+    TICK_MAX = 100_000
+    TICK_TOL = 0.5
+    LOOKAHEAD = 4  # records to validate before accepting start
 
     stride16_start = None
     for off in range(anim_start, anim_end - 16, 1):
         try:
-            f0, f1, f2, f3 = struct.unpack_from('<4f', data, off)
+            f0, f1, f2, f3 = struct.unpack_from("<4f", data, off)
         except struct.error:
             break
         if any(math.isnan(v) or abs(v) > POS_BOUND for v in (f0, f1, f3)):
@@ -851,17 +844,22 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
             for step in range(1, LOOKAHEAD):
                 noff = off + step * 16
                 if noff + 16 > anim_end:
-                    valid = False; break
+                    valid = False
+                    break
                 try:
-                    g0, g1, g2, g3 = struct.unpack_from('<4f', data, noff)
+                    g0, g1, g2, g3 = struct.unpack_from("<4f", data, noff)
                 except struct.error:
-                    valid = False; break
+                    valid = False
+                    break
                 if any(math.isnan(v) or abs(v) > POS_BOUND for v in (g0, g1, g3)):
-                    valid = False; break
+                    valid = False
+                    break
                 if math.isnan(g2):
-                    valid = False; break
+                    valid = False
+                    break
                 if abs(g2 - (f2 + step)) > TICK_TOL:
-                    valid = False; break
+                    valid = False
+                    break
             if valid:
                 stride16_start = off
                 break
@@ -874,8 +872,14 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
         scan_from = _find_skin_block(data, anim_start, anim_end)
         if scan_from is not None:
             skin, skin_pad, skin_resets = _read_skin_weights(data, scan_from, anim_end)
-        return {'pos': pos_keys, 'scale': scale_keys, 'rot': {},
-                'skin': skin, 'skin_pad': skin_pad, 'skin_resets': skin_resets}
+        return {
+            "pos": pos_keys,
+            "scale": scale_keys,
+            "rot": {},
+            "skin": skin,
+            "skin_pad": skin_pad,
+            "skin_resets": skin_resets,
+        }
 
     # --- Parse stride-16 POSITION records ---
 
@@ -883,7 +887,7 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     off = stride16_start
     while off + 16 <= anim_end:
         try:
-            f0, f1, f2, f3 = struct.unpack_from('<4f', data, off)
+            f0, f1, f2, f3 = struct.unpack_from("<4f", data, off)
         except struct.error:
             break
         if any(math.isnan(v) or abs(v) > POS_BOUND for v in (f0, f1, f3)):
@@ -900,7 +904,7 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     # Reconstruct (X, Y, Z) using lag-1 lookahead.
     for i in range(len(pos_records) - 1):
         tick, _, _, v3_cur = pos_records[i]
-        _,    v0_nxt, v1_nxt, _ = pos_records[i + 1]
+        _, v0_nxt, v1_nxt, _ = pos_records[i + 1]
         pos_keys[tick] = (v3_cur, v0_nxt, v1_nxt)
 
     # Last entry has no lookahead — use its own v0/v1 as approximation
@@ -915,7 +919,7 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     scale_records = []
     while off + 16 <= anim_end:
         try:
-            f0, f1, f2, f3 = struct.unpack_from('<4f', data, off)
+            f0, f1, f2, f3 = struct.unpack_from("<4f", data, off)
         except struct.error:
             break
         if any(math.isnan(v) or abs(v) > POS_BOUND for v in (f0, f1, f2, f3)):
@@ -944,8 +948,9 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
     rot_keys, rot_end = _find_rot20_section(data, stride16_end, anim_end)
 
     # Negate all quaternion components to convert xcache convention → .x world
-    rot_keys = {tick: (-qx, -qy, -qz, -qw)
-                for tick, (qx, qy, qz, qw) in rot_keys.items()}
+    rot_keys = {
+        tick: (-qx, -qy, -qz, -qw) for tick, (qx, qy, qz, qw) in rot_keys.items()
+    }
 
     # --- Skin weight section (follows rotation section) ---
     # For mesh-frame bones like Olive's "OliveRig_RootFix" there is
@@ -959,11 +964,18 @@ def _extract_anim(data: bytes, bone: dict, next_bone_start: int):
         if scan_from is not None:
             skin, skin_pad, skin_resets = _read_skin_weights(data, scan_from, anim_end)
 
-    return {'pos': pos_keys, 'scale': scale_keys, 'rot': rot_keys,
-            'skin': skin, 'skin_pad': skin_pad, 'skin_resets': skin_resets}
+    return {
+        "pos": pos_keys,
+        "scale": scale_keys,
+        "rot": rot_keys,
+        "skin": skin,
+        "skin_pad": skin_pad,
+        "skin_resets": skin_resets,
+    }
 
 
 # Mesh parsing
+
 
 def _parse_mesh_section(data: bytes, search_start: int):
     """Locate and parse all mesh sections from *search_start* onwards."""
@@ -985,7 +997,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
     # ChandloLUpperArm.xcache, "SI6" at 0x5ffe found the real mesh
     # data at 0x675c, but ended up naming it "SI6" instead of the
     # actual "skinnedGrumpus" name that immediately preceded the data).
-    pattern = re.compile(rb'[A-Za-z][A-Za-z0-9_]{5,79}\x00')
+    pattern = re.compile(rb"[A-Za-z][A-Za-z0-9_]{5,79}\x00")
     seen_offsets = set()
     # Also dedupe by the vert block's starting offset: the regex can
     # match the same name byte-pattern at multiple positions (e.g.
@@ -995,7 +1007,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
     # 4068-vert block was being added 5 times.
     seen_vert_blocks = set()
     for m in pattern.finditer(data):
-        geo_off  = m.start()
+        geo_off = m.start()
         name_end = m.end() - 1
 
         if geo_off in seen_offsets:
@@ -1005,11 +1017,11 @@ def _parse_mesh_section(data: bytes, search_start: int):
         if name_len < 3 or name_len > 80:
             continue
 
-        name = m.group()[:-1].decode('ascii', errors='replace')
+        name = m.group()[:-1].decode("ascii", errors="replace")
 
         # Skip names that match the joint-bone naming convention — those
         # entries have animation data following them, not a vertex block.
-        if name.endswith('SHJnt'):
+        if name.endswith("SHJnt"):
             continue
 
         ftm_off = name_end
@@ -1018,12 +1030,13 @@ def _parse_mesh_section(data: bytes, search_start: int):
 
         transform = _read_matrix(data, ftm_off)
 
-        if not any(abs(transform[i*4+i] - 1.0) < 0.1 for i in range(3)):
+        if not any(abs(transform[i * 4 + i] - 1.0) < 0.1 for i in range(3)):
             continue
 
         try:
             vert_count, vert_data_off = _find_vertex_block(
-                data, ftm_off + 64, ftm_off + 64 + 4096)
+                data, ftm_off + 64, ftm_off + 64 + 4096
+            )
         except ValueError:
             continue
 
@@ -1033,7 +1046,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
             off = vert_data_off + vi * STRIDE * 4
             if off + STRIDE * 4 > len(data):
                 break
-            f = struct.unpack_from('<16f', data, off)
+            f = struct.unpack_from("<16f", data, off)
             verts.append((f[0], f[1], f[2]))
             normals.append((f[3], f[4], f[5]))
             uvs.append((f[7], f[8]))
@@ -1052,8 +1065,8 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # patterns or garbage that misleads _find_vertex_block.
         bad = 0
         n_zero = 0
-        n_int_x = 0    # X is a small integer 0..1000 (looks like an index, not a coord)
-        n_denorm = 0   # Any coord in (0, 1e-30) — denormalized garbage
+        n_int_x = 0  # X is a small integer 0..1000 (looks like an index, not a coord)
+        n_denorm = 0  # Any coord in (0, 1e-30) — denormalized garbage
         sx_min = sx_max = verts[0][0]
         sy_min = sy_max = verts[0][1]
         sz_min = sz_max = verts[0][2]
@@ -1074,8 +1087,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
             # subnormal floats — they pass the finite/huge checks but
             # are clearly not geometry. A real vert with magnitude
             # below 1e-30 just doesn't exist in any character model.
-            if (0.0 < abs(x) < 1e-30 or 0.0 < abs(y) < 1e-30
-                    or 0.0 < abs(z) < 1e-30):
+            if 0.0 < abs(x) < 1e-30 or 0.0 < abs(y) < 1e-30 or 0.0 < abs(z) < 1e-30:
                 n_denorm += 1
                 continue
             if x == 0.0 and y == 0.0 and z == 0.0:
@@ -1087,12 +1099,18 @@ def _parse_mesh_section(data: bytes, search_start: int):
             # which all pass `x == int(x)`.
             if 0 <= x <= 1000 and x == int(x):
                 n_int_x += 1
-            if x < sx_min: sx_min = x
-            if x > sx_max: sx_max = x
-            if y < sy_min: sy_min = y
-            if y > sy_max: sy_max = y
-            if z < sz_min: sz_min = z
-            if z > sz_max: sz_max = z
+            if x < sx_min:
+                sx_min = x
+            if x > sx_max:
+                sx_max = x
+            if y < sy_min:
+                sy_min = y
+            if y > sy_max:
+                sy_max = y
+            if z < sz_min:
+                sz_min = z
+            if z > sz_max:
+                sz_max = z
         # If more than 5% of "verts" are non-finite or absurdly
         # large, this isn't a real mesh — skip it without marking
         # seen_offsets, so the real mesh (later in the file) can
@@ -1137,25 +1155,25 @@ def _parse_mesh_section(data: bytes, search_start: int):
 
         # Index buffers
         after_verts = vert_data_off + vert_count * STRIDE * 4
-        buf1_start  = after_verts + 8   # skip 2 zero u32 separators
+        buf1_start = after_verts + 8  # skip 2 zero u32 separators
 
         # Detect the buf1/buf2 boundary.
 
         buf2_start_scan = None
-        scan            = buf1_start
-        prev_max_       = -1
-        consec_         = 0
+        scan = buf1_start
+        prev_max_ = -1
+        consec_ = 0
 
         while scan + 6 <= len(data):
-            a, b, c = struct.unpack_from('<3H', data, scan)
+            a, b, c = struct.unpack_from("<3H", data, scan)
             if max(a, b, c) >= vert_count:
                 break
             expected_max = prev_max_ + 3
-            if (max(a, b, c) == expected_max
-                    and min(a, b, c) == prev_max_ + 1
-                    and sorted([a, b, c]) == [prev_max_ + 1,
-                                              prev_max_ + 2,
-                                              prev_max_ + 3]):
+            if (
+                max(a, b, c) == expected_max
+                and min(a, b, c) == prev_max_ + 1
+                and sorted([a, b, c]) == [prev_max_ + 1, prev_max_ + 2, prev_max_ + 3]
+            ):
                 consec_ += 1
                 if consec_ >= 3:
                     buf2_start_scan = scan - (consec_ - 1) * 6
@@ -1172,7 +1190,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
         faces = []
         scan = buf1_start
         while scan < buf2_start_scan and scan + 6 <= len(data):
-            a, b, c = struct.unpack_from('<3H', data, scan)
+            a, b, c = struct.unpack_from("<3H", data, scan)
             if max(a, b, c) >= vert_count:
                 break
             faces.append((a, b, c))
@@ -1181,7 +1199,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # Read buf2 faces (eye/accessory geometry — sequential)
         scan = buf2_start_scan
         while scan + 6 <= len(data):
-            a, b, c = struct.unpack_from('<3H', data, scan)
+            a, b, c = struct.unpack_from("<3H", data, scan)
             if max(a, b, c) >= vert_count:
                 break
             faces.append((a, b, c))
@@ -1196,32 +1214,34 @@ def _parse_mesh_section(data: bytes, search_start: int):
         tex_paths = []
         # Structured matcher: 0x01 + 4-byte LE length + N printable bytes + 0x00
         # where N == the length value. Authoritative for round-tripped exports.
-        struct_pat = re.compile(rb'\x01(.{4})([\x20-\x7e]+\.dds)\x00', re.DOTALL)
+        struct_pat = re.compile(rb"\x01(.{4})([\x20-\x7e]+\.dds)\x00", re.DOTALL)
         # The region between end-of-FTM and start-of-vertex-data
-        mat_block_start = ftm_off + 64   # = data_start for this mesh
-        mat_block_end   = vert_data_off  # vertex data begins here
+        mat_block_start = ftm_off + 64  # = data_start for this mesh
+        mat_block_end = vert_data_off  # vertex data begins here
         block = data[mat_block_start:mat_block_end]
         for tm in struct_pat.finditer(block):
-            decl_len = struct.unpack('<I', tm.group(1))[0]
+            decl_len = struct.unpack("<I", tm.group(1))[0]
             path_bytes = tm.group(2)
             # Reject false positives: the declared length must match the
             # actual ASCII path length (without trailing null).
             if decl_len != len(path_bytes):
                 continue
-            path = path_bytes.decode('ascii', errors='replace')
+            path = path_bytes.decode("ascii", errors="replace")
             if path not in tex_paths:
                 tex_paths.append(path)
 
-        meshes.append({
-            'name':      name,
-            'transform': transform,
-            'verts':     verts,
-            'normals':   normals,
-            'uvs':       uvs,
-            'faces':     faces,
-            'tex_paths': tex_paths,
-            'data_end':  scan,   # offset where this mesh's face buffer ended
-        })
+        meshes.append(
+            {
+                "name": name,
+                "transform": transform,
+                "verts": verts,
+                "normals": normals,
+                "uvs": uvs,
+                "faces": faces,
+                "tex_paths": tex_paths,
+                "data_end": scan,  # offset where this mesh's face buffer ended
+            }
+        )
 
     # Pass 2: pick up UNNAMED continuation meshes following the named
     # ones. Honey.xcache stores its model in two parts (named body +
@@ -1231,7 +1251,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
     # separator, so we probe several alignments around data_end to
     # find the next mesh's bbox header.
     while meshes:
-        last_end = meshes[-1].get('data_end')
+        last_end = meshes[-1].get("data_end")
         if last_end is None or last_end + 88 > len(data):
             break
 
@@ -1246,21 +1266,27 @@ def _parse_mesh_section(data: bytes, search_start: int):
             if probe_off + 88 > len(data):
                 continue
             try:
-                probe = struct.unpack_from('<22f', data, probe_off)
+                probe = struct.unpack_from("<22f", data, probe_off)
             except struct.error:
                 continue
             if not all(math.isfinite(v) for v in probe[:22]):
                 continue
             # Identity matrix diag at indices 6, 11, 16, 21
-            if not (abs(probe[6] - 1.0) < 0.1 and
-                    abs(probe[11] - 1.0) < 0.1 and
-                    abs(probe[16] - 1.0) < 0.1 and
-                    abs(probe[21] - 1.0) < 0.1):
+            if not (
+                abs(probe[6] - 1.0) < 0.1
+                and abs(probe[11] - 1.0) < 0.1
+                and abs(probe[16] - 1.0) < 0.1
+                and abs(probe[21] - 1.0) < 0.1
+            ):
                 continue
             # Off-diagonal must be near-zero — rejects coincidental
             # 1.0 values inside vertex data or animation keys.
-            if any(abs(probe[6 + r*4 + c]) > 0.1
-                   for r in range(4) for c in range(4) if r != c):
+            if any(
+                abs(probe[6 + r * 4 + c]) > 0.1
+                for r in range(4)
+                for c in range(4)
+                if r != c
+            ):
                 continue
             # bbox must be finite, non-degenerate (some non-zero
             # extent), and within sane bounds.
@@ -1278,7 +1304,8 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # Find the vert block in the region after the header.
         try:
             vert_count, vert_data_off = _find_vertex_block(
-                data, chosen_off + 88, chosen_off + 88 + 8192)
+                data, chosen_off + 88, chosen_off + 88 + 8192
+            )
         except ValueError:
             break
 
@@ -1288,7 +1315,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
             off = vert_data_off + vi * STRIDE * 4
             if off + STRIDE * 4 > len(data):
                 break
-            f = struct.unpack_from('<16f', data, off)
+            f = struct.unpack_from("<16f", data, off)
             verts.append((f[0], f[1], f[2]))
             normals.append((f[3], f[4], f[5]))
             uvs.append((f[7], f[8]))
@@ -1298,11 +1325,11 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # Face buffer: simple sequential read (no buf1/buf2 split for the
         # continuation mesh; faces just stop when index >= vert_count).
         after_verts = vert_data_off + vert_count * STRIDE * 4
-        buf1_start  = after_verts + 8
+        buf1_start = after_verts + 8
         faces = []
         scan = buf1_start
         while scan + 6 <= len(data):
-            a, b, c = struct.unpack_from('<3H', data, scan)
+            a, b, c = struct.unpack_from("<3H", data, scan)
             if max(a, b, c) >= vert_count:
                 break
             if a == b == c == 0 and len(faces) > 0:
@@ -1315,13 +1342,13 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # Same structured matcher as pass 1 — accepts any .dds path, not just
         # Content/-prefixed ones, to support round-tripped xcache files.
         tex_paths = []
-        struct_pat = re.compile(rb'\x01(.{4})([\x20-\x7e]+\.dds)\x00', re.DOTALL)
-        for tm in struct_pat.finditer(data[chosen_off + 88:vert_data_off]):
-            decl_len = struct.unpack('<I', tm.group(1))[0]
+        struct_pat = re.compile(rb"\x01(.{4})([\x20-\x7e]+\.dds)\x00", re.DOTALL)
+        for tm in struct_pat.finditer(data[chosen_off + 88 : vert_data_off]):
+            decl_len = struct.unpack("<I", tm.group(1))[0]
             path_bytes = tm.group(2)
             if decl_len != len(path_bytes):
                 continue
-            path = path_bytes.decode('ascii', errors='replace')
+            path = path_bytes.decode("ascii", errors="replace")
             if path not in tex_paths:
                 tex_paths.append(path)
 
@@ -1329,25 +1356,27 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # on the FIRST (named) mesh, not the previous chunk — Queen
         # has 11 chunks and would otherwise produce names like
         # QueenGeo_Part2_Part3_Part4_..._Part11.
-        base_name = meshes[0]['name'] if meshes else 'Mesh'
-        anon_name = f"{base_name}_Part{len(meshes)+1}"
+        base_name = meshes[0]["name"] if meshes else "Mesh"
+        anon_name = f"{base_name}_Part{len(meshes) + 1}"
         # Build a 4x4 transform matrix from the header floats.
         transform = list(hdr[6:22])
 
-        meshes.append({
-            'name':      anon_name,
-            'transform': transform,
-            'verts':     verts,
-            'normals':   normals,
-            'uvs':       uvs,
-            'faces':     faces,
-            'tex_paths': tex_paths,
-            'data_end':  scan,
-        })
+        meshes.append(
+            {
+                "name": anon_name,
+                "transform": transform,
+                "verts": verts,
+                "normals": normals,
+                "uvs": uvs,
+                "faces": faces,
+                "tex_paths": tex_paths,
+                "data_end": scan,
+            }
+        )
 
     # Strip the bookkeeping field before returning.
     for m in meshes:
-        m.pop('data_end', None)
+        m.pop("data_end", None)
 
     # ---- Name-independent direct-scan fallback ----
     #
@@ -1371,8 +1400,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
         STRIDE = 16  # floats per vertex (64 bytes)
         while scan < len(data) - 64 * 5 - 4:
             try:
-                vert_count, vert_data_off = _find_vertex_block(
-                    data, scan, scan + 1)
+                vert_count, vert_data_off = _find_vertex_block(data, scan, scan + 1)
             except ValueError:
                 scan += 1
                 continue
@@ -1384,7 +1412,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
                 off = vert_data_off + vi * STRIDE * 4
                 if off + STRIDE * 4 > len(data):
                     break
-                f = struct.unpack_from('<16f', data, off)
+                f = struct.unpack_from("<16f", data, off)
                 verts.append((f[0], f[1], f[2]))
                 normals.append((f[3], f[4], f[5]))
                 uvs.append((f[7], f[8]))
@@ -1396,22 +1424,23 @@ def _parse_mesh_section(data: bytes, search_start: int):
 
             # Face buffer extraction (mirrors regex-path logic).
             after_verts = vert_data_off + vert_count * STRIDE * 4
-            buf1_start  = after_verts + 8
+            buf1_start = after_verts + 8
 
             buf2_start_scan = None
             face_scan = buf1_start
             prev_max_ = -1
-            consec_   = 0
+            consec_ = 0
             while face_scan + 6 <= len(data):
-                a, b, c = struct.unpack_from('<3H', data, face_scan)
+                a, b, c = struct.unpack_from("<3H", data, face_scan)
                 if max(a, b, c) >= vert_count:
                     break
                 expected_max = prev_max_ + 3
-                if (max(a, b, c) == expected_max
-                        and min(a, b, c) == prev_max_ + 1
-                        and sorted([a, b, c]) == [prev_max_ + 1,
-                                                  prev_max_ + 2,
-                                                  prev_max_ + 3]):
+                if (
+                    max(a, b, c) == expected_max
+                    and min(a, b, c) == prev_max_ + 1
+                    and sorted([a, b, c])
+                    == [prev_max_ + 1, prev_max_ + 2, prev_max_ + 3]
+                ):
                     consec_ += 1
                     if consec_ >= 3:
                         buf2_start_scan = face_scan - (consec_ - 1) * 6
@@ -1426,14 +1455,14 @@ def _parse_mesh_section(data: bytes, search_start: int):
             faces = []
             face_scan = buf1_start
             while face_scan < buf2_start_scan and face_scan + 6 <= len(data):
-                a, b, c = struct.unpack_from('<3H', data, face_scan)
+                a, b, c = struct.unpack_from("<3H", data, face_scan)
                 if max(a, b, c) >= vert_count:
                     break
                 faces.append((a, b, c))
                 face_scan += 6
             face_scan = buf2_start_scan
             while face_scan + 6 <= len(data):
-                a, b, c = struct.unpack_from('<3H', data, face_scan)
+                a, b, c = struct.unpack_from("<3H", data, face_scan)
                 if max(a, b, c) >= vert_count:
                     break
                 faces.append((a, b, c))
@@ -1442,10 +1471,10 @@ def _parse_mesh_section(data: bytes, search_start: int):
 
             # Texture paths in the region before this mesh's verts.
             tex_paths = []
-            tex_pat = re.compile(rb'Content/[^\x00]+\.dds\x00')
+            tex_pat = re.compile(rb"Content/[^\x00]+\.dds\x00")
             tex_scan_start = max(0, vert_data_off - 4096)
             for tm in tex_pat.finditer(data, tex_scan_start, vert_data_off):
-                path = tm.group()[:-1].decode('ascii', errors='replace')
+                path = tm.group()[:-1].decode("ascii", errors="replace")
                 if path not in tex_paths:
                     tex_paths.append(path)
 
@@ -1454,18 +1483,34 @@ def _parse_mesh_section(data: bytes, search_start: int):
             # Use a placeholder.
             base_name = f"Mesh_{len(meshes) + 1}" if meshes else "Mesh"
 
-            meshes.append({
-                'name':      base_name,
-                'transform': [1.0, 0.0, 0.0, 0.0,
-                              0.0, 1.0, 0.0, 0.0,
-                              0.0, 0.0, 1.0, 0.0,
-                              0.0, 0.0, 0.0, 1.0],
-                'verts':     verts,
-                'normals':   normals,
-                'uvs':       uvs,
-                'faces':     faces,
-                'tex_paths': tex_paths,
-            })
+            meshes.append(
+                {
+                    "name": base_name,
+                    "transform": [
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        0.0,
+                        1.0,
+                    ],
+                    "verts": verts,
+                    "normals": normals,
+                    "uvs": uvs,
+                    "faces": faces,
+                    "tex_paths": tex_paths,
+                }
+            )
 
             # Continue scanning from after this mesh's face buffer to
             # find any subsequent meshes (multi-mesh files like
@@ -1505,17 +1550,17 @@ def _is_mesh_bone_name(name: str) -> bool:
     rigs and other physics-bone files that the old "not endswith
     SHJnt" check incorrectly filtered.
     """
-    if name.endswith('SHJnt'):
+    if name.endswith("SHJnt"):
         return False
     # Match mesh-name patterns
-    if name.endswith('Geo') or name.endswith('Geometry'):
+    if name.endswith("Geo") or name.endswith("Geometry"):
         return True
-    if name.startswith('skinned'):
+    if name.startswith("skinned"):
         return True
-    if name in ('HoneyStick', 'Trampoline', 'line'):
+    if name in ("HoneyStick", "Trampoline", "line"):
         return True
     # Ends in 'Geo' + digit(s): OliveGeo1, FloorGeo2, etc.
-    if re.search(r'Geo\d+$', name):
+    if re.search(r"Geo\d+$", name):
         return True
     # Anything else is a real joint (DragonRoll's Root/Head/Body*/Tail,
     # CabinLift's Root/Attach, Pendulum's PendulumRoot/Pendulum,
@@ -1524,6 +1569,7 @@ def _is_mesh_bone_name(name: str) -> bool:
 
 
 # XNode tree construction
+
 
 def _num(v) -> tuple:
     return (TOK_NUM, repr(float(v)))
@@ -1629,10 +1675,12 @@ def _resolve_parent_indices(bones: list) -> list:
     # no longer swinging under its animated BalloonRotation bone). Aligning
     # this with `_build_skeleton_frames`'s `is_skel` test keeps every frame
     # that becomes a skeleton bone eligible for a resolved parent.
-    is_joint = [(not _is_mesh_bone_name(b['name']))
-                or b['name'].endswith('SHJnt')
-                or bool(b.get('skin'))
-                for b in bones]
+    is_joint = [
+        (not _is_mesh_bone_name(b["name"]))
+        or b["name"].endswith("SHJnt")
+        or bool(b.get("skin"))
+        for b in bones
+    ]
 
     def _lcp(a, b):
         n = min(len(a), len(b))
@@ -1653,16 +1701,16 @@ def _resolve_parent_indices(bones: list) -> list:
             first_joint_seen = True
             continue
 
-        ftm  = bones[i]['ftm']
-        bind = bones[i]['bind_pose']
+        ftm = bones[i]["ftm"]
+        bind = bones[i]["bind_pose"]
 
         # Signal 2: parent_field != 0 means "child of previous bone".
         # Trust this over the geometric search — otherwise LCP
         # tie-breaks can pick a wrong parent when several ancestors
         # share an identical world-bind pose.
-        pf = bones[i]['parent']
+        pf = bones[i]["parent"]
         if pf != 0 and i > 0 and is_joint[i - 1]:
-            prev_bind = bones[i - 1]['bind_pose']
+            prev_bind = bones[i - 1]["bind_pose"]
             comp = _mat_mul(ftm, prev_bind)
             err_prev = max(abs(comp[k] - bind[k]) for k in range(16))
             if err_prev < TOL:
@@ -1674,11 +1722,11 @@ def _resolve_parent_indices(bones: list) -> list:
             # "child of previous").
 
         # Signal 3: geometric inference with LCP tie-break.
-        best, best_err = -1, float('inf')
+        best, best_err = -1, float("inf")
         for j in range(len(bones)):
             if j == i or not is_joint[j]:
                 continue
-            par_bind = bones[j]['bind_pose']
+            par_bind = bones[j]["bind_pose"]
             comp = _mat_mul(ftm, par_bind)
             err = max(abs(comp[k] - bind[k]) for k in range(16))
             if err < best_err:
@@ -1693,19 +1741,19 @@ def _resolve_parent_indices(bones: list) -> list:
         # longest common prefix with the child (handles bilateral
         # pairs like l_/r_ and name-hierarchy like Smoothie /
         # UmbrellaNeck / UmbrellaBase).
-        child_name = bones[i]['name']
-        best_lcp   = _lcp(child_name, bones[best]['name'])
+        child_name = bones[i]["name"]
+        best_lcp = _lcp(child_name, bones[best]["name"])
         EPS_TIE = best_err * 10 + 1e-9
         for j in range(len(bones)):
             if j == i or j == best or not is_joint[j]:
                 continue
-            par_bind = bones[j]['bind_pose']
+            par_bind = bones[j]["bind_pose"]
             comp = _mat_mul(ftm, par_bind)
             err_j = max(abs(comp[k] - bind[k]) for k in range(16))
             if err_j < EPS_TIE:
-                lcp_j = _lcp(child_name, bones[j]['name'])
+                lcp_j = _lcp(child_name, bones[j]["name"])
                 if lcp_j > best_lcp:
-                    best     = j
+                    best = j
                     best_lcp = lcp_j
 
         # Sticky-descent override: if the immediately preceding bone's
@@ -1715,9 +1763,8 @@ def _resolve_parent_indices(bones: list) -> list:
         # but their sibling l_Pupil already attached to Noodles_Aux
         # (via the parent_field signal above) — they should follow.
         prev_parent = parents[i - 1] if i > 0 else -1
-        if (prev_parent >= 0 and prev_parent != best
-                and is_joint[prev_parent]):
-            par_bind = bones[prev_parent]['bind_pose']
+        if prev_parent >= 0 and prev_parent != best and is_joint[prev_parent]:
+            par_bind = bones[prev_parent]["bind_pose"]
             comp = _mat_mul(ftm, par_bind)
             err_pp = max(abs(comp[k] - bind[k]) for k in range(16))
             if err_pp < TOL:
@@ -1732,6 +1779,7 @@ def _mat_inv(m16: list) -> list:
     """Invert a 4×4 row-major DirectX-style matrix stored as 16 floats."""
     try:
         from mathutils import Matrix
+
         m = Matrix([m16[0:4], m16[4:8], m16[8:12], m16[12:16]]).transposed()
         try:
             inv = m.inverted()
@@ -1742,31 +1790,34 @@ def _mat_inv(m16: list) -> list:
     except ImportError:
         # Pure-Python fallback (only used outside Blender, e.g. for testing)
         # Use a generic 4x4 inverse via the adjugate / cofactor method.
-        a = [[m16[r*4+c] for c in range(4)] for r in range(4)]
+        a = [[m16[r * 4 + c] for c in range(4)] for r in range(4)]
         n = 4
         # Build augmented matrix and Gauss-Jordan
-        aug = [row[:] + [1.0 if r==c else 0.0 for c in range(n)] for r, row in enumerate(a)]
+        aug = [
+            row[:] + [1.0 if r == c else 0.0 for c in range(n)]
+            for r, row in enumerate(a)
+        ]
         for col in range(n):
             # Pivot
             piv = col
-            for r in range(col+1, n):
+            for r in range(col + 1, n):
                 if abs(aug[r][col]) > abs(aug[piv][col]):
                     piv = r
             aug[col], aug[piv] = aug[piv], aug[col]
             d = aug[col][col]
             if d == 0:
-                return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
-            for c in range(col, 2*n):
+                return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+            for c in range(col, 2 * n):
                 aug[col][c] /= d
             for r in range(n):
                 if r != col:
                     f = aug[r][col]
-                    for c in range(col, 2*n):
+                    for c in range(col, 2 * n):
                         aug[r][c] -= f * aug[col][c]
         flat = []
         for r in range(n):
             for c in range(n):
-                flat.append(aug[r][n+c])
+                flat.append(aug[r][n + c])
         return flat
 
 
@@ -1781,13 +1832,14 @@ def _mat_mul(a16: list, b16: list) -> list:
         for c in range(4):
             s = 0.0
             for k in range(4):
-                s += a16[r*4+k] * b16[k*4+c]
-            out[r*4+c] = s
+                s += a16[r * 4 + k] * b16[k * 4 + c]
+            out[r * 4 + c] = s
     return out
 
 
-def _build_skeleton_frames(bones: list,
-                           companion_hierarchy: dict | None = None) -> list:
+def _build_skeleton_frames(
+    bones: list, companion_hierarchy: dict | None = None
+) -> list:
     """Build a properly-nested Frame XNode tree from the flat bone list.
 
     companion_hierarchy, if provided, maps bone_name → parent_name (empty
@@ -1809,16 +1861,15 @@ def _build_skeleton_frames(bones: list,
     # it leaves the olive body sitting at world origin while the
     # rest of the model animates.
     is_skel = [
-        (not _is_mesh_bone_name(b['name'])) or bool(b.get('skin'))
-        for b in bones
+        (not _is_mesh_bone_name(b["name"])) or bool(b.get("skin")) for b in bones
     ]
     parents = _resolve_parent_indices(bones)
 
     # Override inferred parents with companion hierarchy where available.
     if companion_hierarchy:
-        name_to_idx = {b['name']: i for i, b in enumerate(bones)}
+        name_to_idx = {b["name"]: i for i, b in enumerate(bones)}
         for i, b in enumerate(bones):
-            bname = b['name']
+            bname = b["name"]
             if bname not in companion_hierarchy:
                 continue
             cx_parent_name = companion_hierarchy[bname]
@@ -1849,7 +1900,7 @@ def _build_skeleton_frames(bones: list,
         j = parents[i]
         while j >= 0:
             if j in seen:
-                parents[i] = -1   # break the self-loop / cycle at this edge
+                parents[i] = -1  # break the self-loop / cycle at this edge
                 break
             seen.add(j)
             j = parents[j]
@@ -1863,16 +1914,16 @@ def _build_skeleton_frames(bones: list,
         if not is_skel[i]:
             continue
         if i == 0 or parents[i] < 0:
-            local_ftms[i] = list(b['bind_pose'])
+            local_ftms[i] = list(b["bind_pose"])
         else:
-            local_ftms[i] = list(b['ftm'])
+            local_ftms[i] = list(b["ftm"])
 
     # Build XNode Frame nodes (one per skeleton bone), then wire up children
     nodes: dict[int, XNode] = {}
     for i, b in enumerate(bones):
         if not is_skel[i]:
             continue
-        nodes[i] = _make_frame_node(b['name'], local_ftms[i], [])
+        nodes[i] = _make_frame_node(b["name"], local_ftms[i], [])
 
     # Top-level frames are collected as siblings (matches the dev .x
     # layout where most Bugsnax skeletons are flat at top level).
@@ -1901,12 +1952,12 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
     + XSkinMeshHeader + SkinWeights XNode tree from a parsed xcache mesh dict
     and the bone list. Returns (frame_node, list_of_top_level_materials)."""
 
-    verts   = mesh['verts']
-    normals = mesh['normals']
-    uvs     = mesh['uvs']
-    faces   = mesh['faces']
-    name    = mesh['name']
-    frame_name = name.replace('Geo', '') if name.endswith('Geo') else name
+    verts = mesh["verts"]
+    normals = mesh["normals"]
+    uvs = mesh["uvs"]
+    faces = mesh["faces"]
+    name = mesh["name"]
+    frame_name = name.replace("Geo", "") if name.endswith("Geo") else name
 
     # --- Mesh node ---
     mesh_node = XNode("Mesh", name)
@@ -1942,8 +1993,8 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
     # different texture sets. The dev .x preserves this as two
     # Materials in the MeshMaterialList, with each face indexed to
     # the matching material. We mirror that structure here.
-    per_submesh_tex = mesh.get('per_submesh_tex_paths', [mesh.get('tex_paths', [])])
-    face_to_submesh = mesh.get('face_to_submesh', [0] * len(faces))
+    per_submesh_tex = mesh.get("per_submesh_tex_paths", [mesh.get("tex_paths", [])])
+    face_to_submesh = mesh.get("face_to_submesh", [0] * len(faces))
     n_submeshes = max(1, len(per_submesh_tex))
 
     def _make_material_node(sub_idx, tex_paths_for_sub):
@@ -1956,13 +2007,13 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
         else:
             this_mat_name = f"{frame_name}Material"
         m = XNode("Material", this_mat_name)
-        for v in [1.0, 1.0, 1.0, 1.0]:        # RGBA face colour
+        for v in [1.0, 1.0, 1.0, 1.0]:  # RGBA face colour
             m.values.append(_num(v))
         # The .xcache binary format does NOT carry per-material shininess
-        m.values.append(_num(1.0))             # power (low = matte)
-        for v in [0.0, 0.0, 0.0]:              # specular (none)
+        m.values.append(_num(1.0))  # power (low = matte)
+        for v in [0.0, 0.0, 0.0]:  # specular (none)
             m.values.append(_num(v))
-        for v in [0.0, 0.0, 0.0]:              # emissive
+        for v in [0.0, 0.0, 0.0]:  # emissive
             m.values.append(_num(v))
         if diffuse_path:
             tex_node = XNode("TextureFileName", "")
@@ -1971,11 +2022,13 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
         return m, this_mat_name
 
     # Build top-level Materials (one per sub-mesh) and inline copies
-    submesh_mats = []   # list of (top_level_node, inline_node, mat_name)
+    submesh_mats = []  # list of (top_level_node, inline_node, mat_name)
     for sub_idx in range(n_submeshes):
-        tex_paths_for_sub = per_submesh_tex[sub_idx] if sub_idx < len(per_submesh_tex) else []
+        tex_paths_for_sub = (
+            per_submesh_tex[sub_idx] if sub_idx < len(per_submesh_tex) else []
+        )
         top_m, n_name = _make_material_node(sub_idx, tex_paths_for_sub)
-        inline_m, _   = _make_material_node(sub_idx, tex_paths_for_sub)
+        inline_m, _ = _make_material_node(sub_idx, tex_paths_for_sub)
         submesh_mats.append((top_m, inline_m, n_name))
 
     # First material is returned to the caller in the all_top_mats list
@@ -1985,11 +2038,11 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
     mat_name = submesh_mats[0][2]
 
     mat_list = XNode("MeshMaterialList", "")
-    mat_list.values.append(_num(n_submeshes))       # nMaterials
-    mat_list.values.append(_num(len(faces)))        # nFaceIndexes
+    mat_list.values.append(_num(n_submeshes))  # nMaterials
+    mat_list.values.append(_num(len(faces)))  # nFaceIndexes
     for fi in range(len(faces)):
         sub = face_to_submesh[fi] if fi < len(face_to_submesh) else 0
-        mat_list.values.append(_num(sub))            # face -> material index
+        mat_list.values.append(_num(sub))  # face -> material index
     # Inline copies of every sub-mesh material so importers that
     # prefer inline definitions still see them all.
     for top_m, inline_m, n_name in submesh_mats:
@@ -2008,12 +2061,12 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
         # we'll actually emit below. Without this, split-mode sub-mesh
         # 2 might emit an XSkinMeshHeader claiming count = chunk-0's
         # influencing bones instead of chunk-2's.
-        per_mesh_skin_local = mesh.get('per_mesh_skin')
+        per_mesh_skin_local = mesh.get("per_mesh_skin")
         if per_mesh_skin_local is not None:
             influencing_bones = [bones[bi] for bi, inf in per_mesh_skin_local if inf]
         else:
             # Count how many bones actually influence at least one vertex
-            influencing_bones = [b for b in bones if b.get('skin', [])]
+            influencing_bones = [b for b in bones if b.get("skin", [])]
         n_inf = len(influencing_bones) if influencing_bones else 1
 
         # Per dev .x convention, ALL skel bones get a SkinWeights
@@ -2029,6 +2082,7 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
 
         try:
             from mathutils import Matrix
+
             _has_mathutils = True
         except ImportError:
             _has_mathutils = False
@@ -2043,11 +2097,11 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
                 inv_t = inv.transposed()
                 return [inv_t[r][c] for r in range(4) for c in range(4)]
             else:
-                return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
+                return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
 
         def _emit_sw_node(bone, influences):
             sw = XNode("SkinWeights", "")
-            sw.values.append(_str(bone['name']))
+            sw.values.append(_str(bone["name"]))
             sw.values.append(_num(len(influences)))
             # Influences may be (vi, w) pairs (after the multi-chunk
             # shift loop processed them) or (vi, w, trailer) triples
@@ -2062,12 +2116,12 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
             # the SkinWeights matrixOffset stored by the .x exporter
             # for the same character. Falls back to inv(bind_pose) if
             # for some reason skin_offset is missing or zero.
-            skin_off = bone.get('skin_offset')
+            skin_off = bone.get("skin_offset")
             if skin_off and any(abs(v) > 1e-9 for v in skin_off):
                 for v in skin_off:
                     sw.values.append(_num(v))
             else:
-                for v in _inv_ftm(bone['bind_pose']):
+                for v in _inv_ftm(bone["bind_pose"]):
                     sw.values.append(_num(v))
             return sw
 
@@ -2077,15 +2131,14 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
         # chunk-local vi values. We use it directly instead of walking
         # b['skin'] (which in split mode only holds chunk-0 data for
         # compatibility with animation extraction).
-        per_mesh_skin = mesh.get('per_mesh_skin')
+        per_mesh_skin = mesh.get("per_mesh_skin")
         if per_mesh_skin is not None:
             sw_bone_set = {bi for bi, _ in per_mesh_skin}
             sw_by_bone = {bi: inf for bi, inf in per_mesh_skin}
             for bi, b in enumerate(bones):
                 if bi in sw_bone_set:
-                    mesh_node.children.append(
-                        _emit_sw_node(b, sw_by_bone[bi]))
-                elif emit_empty_skinweights and not _is_mesh_bone_name(b['name']):
+                    mesh_node.children.append(_emit_sw_node(b, sw_by_bone[bi]))
+                elif emit_empty_skinweights and not _is_mesh_bone_name(b["name"]):
                     # Empty placeholder for skel joints that don't
                     # weight THIS sub-mesh — keeps the per-mesh
                     # SkinWeights count consistent across sub-meshes
@@ -2102,11 +2155,11 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
             # like Olive's RootFix are non-SHJnt but DO have skin
             # data — those MUST be emitted.
             for b in bones:
-                influences = b.get('skin', [])
+                influences = b.get("skin", [])
                 if influences:
                     # Always emit when there's data, regardless of name.
                     mesh_node.children.append(_emit_sw_node(b, influences))
-                elif emit_empty_skinweights and not _is_mesh_bone_name(b['name']):
+                elif emit_empty_skinweights and not _is_mesh_bone_name(b["name"]):
                     # Empty placeholder for unrigged skel joints (arm,
                     # leg, Hold bones in Beffica). Skip mesh-frame
                     # entries (the geo node, not a joint).
@@ -2115,24 +2168,24 @@ def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
             # Fallback: bind all vertices 100% to root bone
             root_bone = bones[0]
             sw = XNode("SkinWeights", "")
-            sw.values.append(_str(root_bone['name']))
+            sw.values.append(_str(root_bone["name"]))
             sw.values.append(_num(len(verts)))
             for i in range(len(verts)):
                 sw.values.append(_num(i))
             for _ in range(len(verts)):
                 sw.values.append(_num(1.0))
-            skin_off = root_bone.get('skin_offset')
+            skin_off = root_bone.get("skin_offset")
             if skin_off and any(abs(v) > 1e-9 for v in skin_off):
                 for v in skin_off:
                     sw.values.append(_num(v))
             else:
-                for v in _inv_ftm(root_bone['bind_pose']):
+                for v in _inv_ftm(root_bone["bind_pose"]):
                     sw.values.append(_num(v))
             mesh_node.children.append(sw)
 
     # --- Frame wrapping the mesh ---
     frame_node = XNode("Frame", frame_name)
-    frame_node.children.append(_make_ftm_node(mesh['transform']))
+    frame_node.children.append(_make_ftm_node(mesh["transform"]))
     frame_node.children.append(mesh_node)
     # Return list of all sub-mesh top-level materials. Single-mesh
     # files return a list of one for backwards compatibility.
@@ -2145,14 +2198,14 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
     anim_set = XNode("AnimationSet", "anim")
 
     for bone in bones:
-        name = bone['name']
+        name = bone["name"]
         # Skip mesh entries — they don't carry animation tracks
         if _is_mesh_bone_name(name):
             continue
         channels = anim_data.get(name, {})
-        pos_keys   = channels.get('pos',   {})
-        scale_keys = channels.get('scale', {})
-        rot_keys   = channels.get('rot',   {})
+        pos_keys = channels.get("pos", {})
+        scale_keys = channels.get("scale", {})
+        rot_keys = channels.get("rot", {})
 
         if not pos_keys and not scale_keys and not rot_keys:
             continue
@@ -2168,8 +2221,9 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
             rot_key.values.extend([_num(0), _num(len(rot_keys))])
             for tick in sorted(rot_keys):
                 qx, qy, qz, qw = rot_keys[tick]
-                rot_key.values.extend([_num(tick), _num(4),
-                                        _num(qw), _num(qx), _num(qy), _num(qz)])
+                rot_key.values.extend(
+                    [_num(tick), _num(4), _num(qw), _num(qx), _num(qy), _num(qz)]
+                )
             anim_node.children.append(rot_key)
         else:
             # Synthesise identity rotation for every animated frame
@@ -2178,8 +2232,16 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
                 rot_key = XNode("AnimationKey", "")
                 rot_key.values.extend([_num(0), _num(len(all_ticks))])
                 for tick in all_ticks:
-                    rot_key.values.extend([_num(tick), _num(4),
-                                            _num(-1.0), _num(0.0), _num(0.0), _num(0.0)])
+                    rot_key.values.extend(
+                        [
+                            _num(tick),
+                            _num(4),
+                            _num(-1.0),
+                            _num(0.0),
+                            _num(0.0),
+                            _num(0.0),
+                        ]
+                    )
                 anim_node.children.append(rot_key)
 
         # Scale keys (type 1)
@@ -2187,8 +2249,9 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
             sc_key = XNode("AnimationKey", "")
             sc_key.values.extend([_num(1), _num(len(scale_keys))])
             for tick, (sx, sy, sz) in sorted(scale_keys.items()):
-                sc_key.values.extend([_num(tick), _num(3),
-                                       _num(sx), _num(sy), _num(sz)])
+                sc_key.values.extend(
+                    [_num(tick), _num(3), _num(sx), _num(sy), _num(sz)]
+                )
             anim_node.children.append(sc_key)
 
         # Position keys (type 2)
@@ -2196,8 +2259,9 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
             pos_key = XNode("AnimationKey", "")
             pos_key.values.extend([_num(2), _num(len(pos_keys))])
             for tick, (px, py, pz) in sorted(pos_keys.items()):
-                pos_key.values.extend([_num(tick), _num(3),
-                                        _num(px), _num(py), _num(pz)])
+                pos_key.values.extend(
+                    [_num(tick), _num(3), _num(px), _num(py), _num(pz)]
+                )
             anim_node.children.append(pos_key)
 
         anim_set.children.append(anim_node)
@@ -2206,6 +2270,7 @@ def _build_animation_set(bones: list, anim_data: dict[str, dict]) -> XNode:
 
 
 # Public entry point
+
 
 def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     """Parse a Horsepower Engine SEMS .xcache file and return an XNode tree.
@@ -2222,12 +2287,12 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     same armature, and round-trip export preserves the exact sub-mesh
     structure of the original file.
     """
-    with open(filepath, 'rb') as fh:
+    with open(filepath, "rb") as fh:
         data = fh.read()
 
     if len(data) < 28:
         raise ValueError(f"Not a SEMS file: too short ({len(data)} bytes)")
-    if data[:4] != b'SEMS':
+    if data[:4] != b"SEMS":
         raise ValueError(f"Not a SEMS file: magic={data[:4]!r}")
 
     # Filename stem (used later for mesh-name fallback when the file
@@ -2245,7 +2310,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     anim_data: dict[str, dict] = {}
     for i, bone in enumerate(bones):
         if i + 1 < len(bones):
-            next_bone_hdr = bones[i + 1]['data_start'] - 64 - len(bones[i + 1]['name'])
+            next_bone_hdr = bones[i + 1]["data_start"] - 64 - len(bones[i + 1]["name"])
         else:
             # Last bone: there's no following bone header, so
             # `after_bones` equals this bone's data_start (zero-sized
@@ -2254,7 +2319,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
             # rotation scanner terminates on non-quat data and the
             # skin reader rejects bogus counts, so an over-large
             # window is safe.
-            next_bone_hdr = min(bone['data_start'] + 200_000, len(data))
+            next_bone_hdr = min(bone["data_start"] + 200_000, len(data))
         # Per-bone failures should not abort the entire parse — an
         # animation channel that can't be decoded is preferable to a
         # zero-bones import. The empty-channels fallback preserves the
@@ -2262,13 +2327,19 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         try:
             channels = _extract_anim(data, bone, next_bone_hdr)
         except (struct.error, ValueError, IndexError):
-            channels = {'pos': {}, 'scale': {}, 'rot': {},
-                        'skin': [], 'skin_pad': 0, 'skin_resets': []}
-        bone['skin']        = channels.get('skin', [])
-        bone['skin_pad']    = channels.get('skin_pad', 0)
-        bone['skin_resets'] = channels.get('skin_resets', [])
-        if channels['pos'] or channels['scale'] or channels['rot']:
-            anim_data[bone['name']] = channels
+            channels = {
+                "pos": {},
+                "scale": {},
+                "rot": {},
+                "skin": [],
+                "skin_pad": 0,
+                "skin_resets": [],
+            }
+        bone["skin"] = channels.get("skin", [])
+        bone["skin_pad"] = channels.get("skin_pad", 0)
+        bone["skin_resets"] = channels.get("skin_resets", [])
+        if channels["pos"] or channels["scale"] or channels["rot"]:
+            anim_data[bone["name"]] = channels
 
     # --- Parse meshes ---
     # Mesh section parsing is best-effort: a corrupt mesh region should
@@ -2285,22 +2356,22 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     # filename-derived names so the Blender import gets a useful label.
     if meshes:
         for i, m in enumerate(meshes):
-            if m.get('name') in ('Mesh', None, ''):
-                m['name'] = _xcache_stem if i == 0 else f"{_xcache_stem}_{i+1}"
-            elif m.get('name', '').startswith('Mesh_'):
+            if m.get("name") in ("Mesh", None, ""):
+                m["name"] = _xcache_stem if i == 0 else f"{_xcache_stem}_{i + 1}"
+            elif m.get("name", "").startswith("Mesh_"):
                 # Placeholder like 'Mesh_2' from multi-mesh fallback
                 # path; replace with stem-suffixed variant.
-                suffix = m['name'][5:]   # strip 'Mesh_'
-                m['name'] = f"{_xcache_stem}_{suffix}"
+                suffix = m["name"][5:]  # strip 'Mesh_'
+                m["name"] = f"{_xcache_stem}_{suffix}"
 
     # Default per-mesh metadata for single-mesh files (single-mesh
     # files skip the multi-mesh merge below). For Beffica/Honey-class
     # files these get overwritten by the merge.
     for m in meshes:
-        if 'face_to_submesh' not in m:
-            m['face_to_submesh'] = [0] * len(m['faces'])
-        if 'per_submesh_tex_paths' not in m:
-            m['per_submesh_tex_paths'] = [list(m.get('tex_paths', []))]
+        if "face_to_submesh" not in m:
+            m["face_to_submesh"] = [0] * len(m["faces"])
+        if "per_submesh_tex_paths" not in m:
+            m["per_submesh_tex_paths"] = [list(m.get("tex_paths", []))]
 
     # If we found a continuation mesh (e.g. Honey's goop overlay), merge
     # it into the primary mesh. pad=1 SkinWeights reference the
@@ -2315,11 +2386,11 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     # then contains one Frame per sub-mesh, each holding its own Mesh.
     if len(meshes) > 1 and not split_submeshes:
         primary = meshes[0]
-        n_primary_verts = len(primary['verts'])
+        n_primary_verts = len(primary["verts"])
         # Concatenate verts/normals/uvs from continuation meshes.
         # Faces from continuation meshes get their indices shifted by
         # the cumulative vert count.
-        merged_faces = list(primary['faces'])
+        merged_faces = list(primary["faces"])
         cumulative = n_primary_verts
         offsets_per_mesh = [0]  # mesh i's verts start at offsets_per_mesh[i]
         # Per-face sub-mesh index, so each segment can keep its own
@@ -2327,28 +2398,28 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         # limbs — with different textures. Without this, the export
         # produces one merged material per segment AND loses the
         # body-vs-limbs distinction from the original Maya rig.
-        face_to_submesh = [0] * len(primary['faces'])
+        face_to_submesh = [0] * len(primary["faces"])
         # Per-sub-mesh texture-path lists. Indexed by submesh idx.
-        per_submesh_tex_paths = [list(primary['tex_paths'])]
+        per_submesh_tex_paths = [list(primary["tex_paths"])]
         for sub_idx, cont in enumerate(meshes[1:], start=1):
             offsets_per_mesh.append(cumulative)
-            primary['verts'].extend(cont['verts'])
-            primary['normals'].extend(cont['normals'])
-            primary['uvs'].extend(cont['uvs'])
-            for a, b, c in cont['faces']:
+            primary["verts"].extend(cont["verts"])
+            primary["normals"].extend(cont["normals"])
+            primary["uvs"].extend(cont["uvs"])
+            for a, b, c in cont["faces"]:
                 merged_faces.append((a + cumulative, b + cumulative, c + cumulative))
                 face_to_submesh.append(sub_idx)
             # Keep this sub-mesh's textures separate from primary's
-            per_submesh_tex_paths.append(list(cont['tex_paths']))
+            per_submesh_tex_paths.append(list(cont["tex_paths"]))
             # Also append to primary's tex_paths for backwards-compat
             # callers that look at the flat list (unchanged behaviour).
-            for tp in cont['tex_paths']:
-                if tp not in primary['tex_paths']:
-                    primary['tex_paths'].append(tp)
-            cumulative += len(cont['verts'])
-        primary['faces'] = merged_faces
-        primary['face_to_submesh'] = face_to_submesh
-        primary['per_submesh_tex_paths'] = per_submesh_tex_paths
+            for tp in cont["tex_paths"]:
+                if tp not in primary["tex_paths"]:
+                    primary["tex_paths"].append(tp)
+            cumulative += len(cont["verts"])
+        primary["faces"] = merged_faces
+        primary["face_to_submesh"] = face_to_submesh
+        primary["per_submesh_tex_paths"] = per_submesh_tex_paths
         meshes = [primary]
 
         # Remap SkinWeights vi to point into the merged vert array.
@@ -2366,7 +2437,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         n_chunks = len(offsets_per_mesh)
 
         # Build a vert lookup for the side-aware filter (below).
-        merged_verts = meshes[0]['verts']
+        merged_verts = meshes[0]["verts"]
 
         # Pre-compute bone bind-space positions (used by side filter).
         # skin_offset is the inverse-bind transform; inverting it gives
@@ -2374,30 +2445,31 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         bone_bind_pos = {}
         try:
             import numpy as _np
+
             _has_numpy = True
         except ImportError:
             _has_numpy = False
         for b in bones:
-            so = b.get('skin_offset')
+            so = b.get("skin_offset")
             if not so:
                 continue
             try:
                 if _has_numpy:
                     M = _np.array(so).reshape(4, 4)
                     Minv = _np.linalg.inv(M)
-                    bone_bind_pos[b['name']] = (Minv[3, 0], Minv[3, 1], Minv[3, 2])
+                    bone_bind_pos[b["name"]] = (Minv[3, 0], Minv[3, 1], Minv[3, 2])
                 else:
                     inv = _mat_inv(so)
-                    bone_bind_pos[b['name']] = (inv[12], inv[13], inv[14])
+                    bone_bind_pos[b["name"]] = (inv[12], inv[13], inv[14])
             except Exception:
                 pass
 
         for b in bones:
-            skin = b.get('skin')
+            skin = b.get("skin")
             if not skin:
                 continue
-            pad = b.get('skin_pad', 0)
-            resets = b.get('skin_resets') or []
+            pad = b.get("skin_pad", 0)
+            resets = b.get("skin_resets") or []
 
             # Each skin entry carries its own chunk index in the
             # trailer field; a single bone's block can span multiple
@@ -2406,7 +2478,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
             # (vi, w) tuples are treated as trailer=pad.
 
             # Side-aware filter setup.
-            bp_xyz = bone_bind_pos.get(b['name'])
+            bp_xyz = bone_bind_pos.get(b["name"])
             bone_x = bp_xyz[0] if bp_xyz is not None else 0.0
             side_filter_active = abs(bone_x) > 1.0
             SIDE_TOLERANCE = 5.0
@@ -2451,12 +2523,12 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
             if resets:
                 segs = [0] + resets + [len(skin)]
                 for j in range(len(segs) - 1):
-                    for entry in skin[segs[j]:segs[j+1]]:
+                    for entry in skin[segs[j] : segs[j + 1]]:
                         _process_entry(entry)
             else:
                 for entry in skin:
                     _process_entry(entry)
-            b['skin'] = list(merged.items())
+            b["skin"] = list(merged.items())
 
     # ---- Split-aware path: distribute skin weights per sub-mesh ----
     #
@@ -2486,11 +2558,11 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         ]
 
         for bi, b in enumerate(bones):
-            skin = b.get('skin')
+            skin = b.get("skin")
             if not skin:
                 continue
-            pad = b.get('skin_pad', 0)
-            resets = b.get('skin_resets') or []
+            pad = b.get("skin_pad", 0)
+            resets = b.get("skin_resets") or []
 
             def _process_entry_split(entry, _bi=bi):
                 if len(entry) == 3:
@@ -2502,7 +2574,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
                 if not (0 <= trailer < n_chunks):
                     trailer = 0
                 # Reject vi values that exceed this chunk's vert count
-                chunk_vc = len(meshes[trailer]['verts'])
+                chunk_vc = len(meshes[trailer]["verts"])
                 if vi >= chunk_vc:
                     return
                 bdict = per_mesh_bone_weights[trailer].setdefault(_bi, {})
@@ -2511,7 +2583,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
             if resets:
                 segs = [0] + resets + [len(skin)]
                 for j in range(len(segs) - 1):
-                    for entry in skin[segs[j]:segs[j+1]]:
+                    for entry in skin[segs[j] : segs[j + 1]]:
                         _process_entry_split(entry)
             else:
                 for entry in skin:
@@ -2530,7 +2602,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
                 influences = list(vi_w_dict.items())
                 if influences:
                     mesh_sw.append((bi, influences))
-            mesh['per_mesh_skin'] = mesh_sw
+            mesh["per_mesh_skin"] = mesh_sw
 
         # For compatibility with the merge path's b['skin'] shape,
         # synthesize a flat skin list per bone (using chunk-0 weights
@@ -2542,7 +2614,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
             for mi in range(n_chunks):
                 influences = list(per_mesh_bone_weights[mi].get(bi, {}).items())
                 if influences:
-                    b['skin'] = influences
+                    b["skin"] = influences
                     break
 
     # --- Build XNode tree ---
@@ -2577,9 +2649,9 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     # inference picks the wrong one. Bones absent from the companion
     # (e.g. LOD/helper bones added in the xcache) keep the inferred
     # result.
-    _companion_hierarchy: dict[str, str] = {}   # bone_name -> parent_name
-    _xcache_dir  = os.path.dirname(os.path.abspath(filepath))
-    for _ext in ('.x', '.X'):
+    _companion_hierarchy: dict[str, str] = {}  # bone_name -> parent_name
+    _xcache_dir = os.path.dirname(os.path.abspath(filepath))
+    for _ext in (".x", ".X"):
         _cx_path = os.path.join(_xcache_dir, _xcache_stem + _ext)
         if os.path.exists(_cx_path):
             try:
@@ -2592,21 +2664,25 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
                     from io_directx_x.parser import parse_x_file as _parse_x_file
                 except Exception:
                     try:
-                        from .parser import parse_x_file as _parse_x_file  # legacy combined layout
+                        from .parser import (
+                            parse_x_file as _parse_x_file,
+                        )  # legacy combined layout
                     except Exception:
                         _parse_x_file = None
                 if _parse_x_file is None:
                     break
                 _cx_root = _parse_x_file(_cx_path)
+
                 def _collect_hierarchy(node, parent_name=None):
-                    if node.kind == 'Frame':
+                    if node.kind == "Frame":
                         if node.name:
-                            _companion_hierarchy[node.name] = parent_name or ''
+                            _companion_hierarchy[node.name] = parent_name or ""
                         for _c in node.children:
                             _collect_hierarchy(_c, node.name)
                     else:
                         for _c in node.children:
                             _collect_hierarchy(_c, parent_name)
+
                 _collect_hierarchy(_cx_root)
             except Exception:
                 _companion_hierarchy = {}  # companion parse failure → keep inferred
@@ -2625,6 +2701,7 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
         root.children.append(_build_animation_set(bones, anim_data))
 
     return root
+
 
 # WRITER (export side)
 

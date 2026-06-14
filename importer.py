@@ -1,9 +1,8 @@
-"""Cache → Blender import for all three Bugsnax formats.
+"""Cache -> Blender import for all three Bugsnax cache formats.
 
-  * import_cache   — .objcache / .daecache static mesh.
-  * import_xcache  — .xcache skinned character (mesh + armature +
-    weights + animation).  Frozen logic from the former
-    xcache_importer.py, merged in verbatim.
+* import_cache   -- .objcache / .daecache static mesh.
+* import_xcache  -- .xcache skinned character
+                    (mesh + armature + weights + animation).
 """
 
 import os
@@ -19,23 +18,32 @@ from .parser import parse_xcache_file
 # asset-relative paths like "Content/Models/.../foo_D.dds" but the
 # user's local file layout might differ.
 _TEXTURE_SUBDIRS = ("", "Textures", "tex", "textures", "Content")
-_TEXTURE_EXTS = (".png", ".jpg", ".jpeg", ".tga", ".dds",
-                 ".bmp", ".tif", ".tiff", ".webp")
+_TEXTURE_EXTS = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".tga",
+    ".dds",
+    ".bmp",
+    ".tif",
+    ".tiff",
+    ".webp",
+)
 
 
 def _try_load_image(base_dir: str, asset_path: str):
     """Locate a texture on disk near `base_dir`, falling back to a 1x1
     placeholder image whose `filepath` keeps the original reference so
     it round-trips on export."""
-    asset_path = asset_path.replace('\\', '/')
+    asset_path = asset_path.replace("\\", "/")
     asset_name = os.path.basename(asset_path)
 
     # Try the full path, then progressively shorter tails of it.
     tails = [asset_path]
-    parts = asset_path.split('/')
+    parts = asset_path.split("/")
     while len(parts) > 1:
         parts = parts[1:]
-        tails.append('/'.join(parts))
+        tails.append("/".join(parts))
 
     candidates = []
     for tail in tails:
@@ -60,7 +68,7 @@ def _try_load_image(base_dir: str, asset_path: str):
 
     placeholder = bpy.data.images.new(asset_name, width=1, height=1, alpha=True)
     placeholder.filepath = os.path.join(base_dir, asset_path)
-    placeholder.source = 'FILE'
+    placeholder.source = "FILE"
     return placeholder
 
 
@@ -104,6 +112,7 @@ def _image_has_transparency(img) -> bool:
                 return False
             try:
                 import numpy as np
+
                 buf = np.empty(n, dtype=np.float32)
                 img.pixels.foreach_get(buf)
                 alpha = buf[3::channels]
@@ -128,9 +137,14 @@ def _image_has_transparency(img) -> bool:
         return False
 
 
-def _build_material(mesh_name: str, textures: list, base_dir: str,
-                    tint_rgba: bytes, load_textures: bool,
-                    use_diffuse_alpha: bool = False):
+def _build_material(
+    mesh_name: str,
+    textures: list,
+    base_dir: str,
+    tint_rgba: bytes,
+    load_textures: bool,
+    use_diffuse_alpha: bool = False,
+):
     """Build a Principled-BSDF material with up to three texture slots
     (diffuse, normal, specular). Missing slots are skipped."""
     mat = bpy.data.materials.new(name=mesh_name)
@@ -138,12 +152,12 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
     nodes = mat.node_tree.nodes
     links = mat.node_tree.links
 
-    bsdf = nodes.get('Principled BSDF')
+    bsdf = nodes.get("Principled BSDF")
     if bsdf is None:
         return mat
 
     if tint_rgba and len(tint_rgba) >= 3:
-        bsdf.inputs['Base Color'].default_value = (
+        bsdf.inputs["Base Color"].default_value = (
             tint_rgba[0] / 255.0,
             tint_rgba[1] / 255.0,
             tint_rgba[2] / 255.0,
@@ -159,7 +173,7 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
         img = _try_load_image(base_dir, asset_path)
         if img is None:
             return None
-        node = nodes.new('ShaderNodeTexImage')
+        node = nodes.new("ShaderNodeTexImage")
         node.image = img
         node.location = (x, y)
         return node
@@ -167,7 +181,7 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
     if len(textures) >= 1:
         diff = _add_image_node(textures[0], -400, 300)
         if diff is not None:
-            links.new(diff.outputs['Color'], bsdf.inputs['Base Color'])
+            links.new(diff.outputs["Color"], bsdf.inputs["Base Color"])
 
             # Connect the diffuse texture's alpha -> material Alpha when
             # "Use Diffuse Alpha" is on AND the texture genuinely carries
@@ -180,8 +194,8 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
             if use_diffuse_alpha:
                 try:
                     if _image_has_transparency(diff.image):
-                        links.new(diff.outputs['Alpha'], bsdf.inputs['Alpha'])
-                        mat.blend_method = 'CLIP'
+                        links.new(diff.outputs["Alpha"], bsdf.inputs["Alpha"])
+                        mat.blend_method = "CLIP"
                         try:
                             mat.alpha_threshold = 0.5
                         except Exception:
@@ -192,7 +206,7 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
                             pass
                     else:
                         try:
-                            mat.blend_method = 'OPAQUE'
+                            mat.blend_method = "OPAQUE"
                         except Exception:
                             pass
                 except Exception:
@@ -202,33 +216,33 @@ def _build_material(mesh_name: str, textures: list, base_dir: str,
         norm = _add_image_node(textures[1], -400, 0)
         if norm is not None:
             try:
-                norm.image.colorspace_settings.name = 'Non-Color'
+                norm.image.colorspace_settings.name = "Non-Color"
             except Exception:
                 pass
-            nmap = nodes.new('ShaderNodeNormalMap')
+            nmap = nodes.new("ShaderNodeNormalMap")
             nmap.location = (-180, 0)
-            links.new(norm.outputs['Color'], nmap.inputs['Color'])
-            links.new(nmap.outputs['Normal'], bsdf.inputs['Normal'])
+            links.new(norm.outputs["Color"], nmap.inputs["Color"])
+            links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
 
     if len(textures) >= 3:
         spec = _add_image_node(textures[2], -400, -300)
         if spec is not None:
             try:
-                spec.image.colorspace_settings.name = 'Non-Color'
+                spec.image.colorspace_settings.name = "Non-Color"
             except Exception:
                 pass
             # Blender 4.x renamed "Specular" to "Specular IOR Level".
-            for input_name in ('Specular IOR Level', 'Specular'):
+            for input_name in ("Specular IOR Level", "Specular"):
                 if input_name in bsdf.inputs:
-                    links.new(spec.outputs['Color'], bsdf.inputs[input_name])
+                    links.new(spec.outputs["Color"], bsdf.inputs[input_name])
                     break
 
     return mat
 
 
-def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
-                       obj_name: str,
-                       global_scale: float):
+def _build_mesh_object(
+    mesh_data: cache_parser.CacheMesh, obj_name: str, global_scale: float
+):
     """Build a Blender Object + Mesh from `mesh_data`."""
     me = bpy.data.meshes.new(obj_name)
 
@@ -242,7 +256,7 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
     me.update()
 
     # Per-vertex split normals, rotated to match the position transform.
-    if mesh_data.normals and hasattr(me, 'normals_split_custom_set'):
+    if mesh_data.normals and hasattr(me, "normals_split_custom_set"):
         for poly in me.polygons:
             poly.use_smooth = True
         rotated = [(n[0], -n[2], n[1]) for n in mesh_data.normals]
@@ -250,10 +264,11 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
         for poly in me.polygons:
             for loop_idx in poly.loop_indices:
                 vi = me.loops[loop_idx].vertex_index
-                loop_normals.append(rotated[vi] if vi < len(rotated)
-                                    else (0.0, 0.0, 1.0))
+                loop_normals.append(
+                    rotated[vi] if vi < len(rotated) else (0.0, 0.0, 1.0)
+                )
         try:
-            if hasattr(me, 'use_auto_smooth'):
+            if hasattr(me, "use_auto_smooth"):
                 me.use_auto_smooth = True
             me.normals_split_custom_set(loop_normals)
         except Exception:
@@ -261,7 +276,7 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
 
     # Primary UV (V-flip to match Blender's convention).
     if mesh_data.uvs:
-        uv = me.uv_layers.new(name='UVMap')
+        uv = me.uv_layers.new(name="UVMap")
         for poly in me.polygons:
             for loop_idx in poly.loop_indices:
                 vi = me.loops[loop_idx].vertex_index
@@ -270,7 +285,7 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
                     uv.data[loop_idx].uv = (u, 1.0 - v)
 
     # Daecache extras as extra UV layers (preserved verbatim for export).
-    for layer_name, src in (('UV2', mesh_data.uv2), ('UV3', mesh_data.uv3)):
+    for layer_name, src in (("UV2", mesh_data.uv2), ("UV3", mesh_data.uv3)):
         if not src:
             continue
         layer = me.uv_layers.new(name=layer_name)
@@ -283,9 +298,9 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
     # Per-vertex colour as a corner BYTE_COLOR attribute.
     if mesh_data.colors:
         try:
-            attr = me.color_attributes.new(name='Col',
-                                           type='BYTE_COLOR',
-                                           domain='CORNER')
+            attr = me.color_attributes.new(
+                name="Col", type="BYTE_COLOR", domain="CORNER"
+            )
             for poly in me.polygons:
                 for loop_idx in poly.loop_indices:
                     vi = me.loops[loop_idx].vertex_index
@@ -293,8 +308,10 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
                         c = mesh_data.colors[vi]
                         if len(c) >= 4:
                             attr.data[loop_idx].color = (
-                                c[0] / 255.0, c[1] / 255.0,
-                                c[2] / 255.0, c[3] / 255.0,
+                                c[0] / 255.0,
+                                c[1] / 255.0,
+                                c[2] / 255.0,
+                                c[3] / 255.0,
                             )
         except Exception:
             pass
@@ -302,11 +319,14 @@ def _build_mesh_object(mesh_data: cache_parser.CacheMesh,
     return bpy.data.objects.new(obj_name, me)
 
 
-def import_cache(context, filepath: str,
-                 global_scale: float = 1.0,
-                 import_textures: bool = True,
-                 use_diffuse_alpha: bool = False,
-                 **_):
+def import_cache(
+    context,
+    filepath: str,
+    global_scale: float = 1.0,
+    import_textures: bool = True,
+    use_diffuse_alpha: bool = False,
+    **_,
+):
     """Import .objcache or .daecache as a static mesh object."""
     mesh_data = cache_parser.parse_cache_file(filepath)
     base_dir = os.path.dirname(filepath)
@@ -317,15 +337,22 @@ def import_cache(context, filepath: str,
     context.view_layer.objects.active = obj
     obj.select_set(True)
 
-    has_tint = (mesh_data.tint_rgba and mesh_data.tint_rgba[:3]
-                not in (b'\xff\xff\xff', b'\x00\x00\x00'))
+    has_tint = mesh_data.tint_rgba and mesh_data.tint_rgba[:3] not in (
+        b"\xff\xff\xff",
+        b"\x00\x00\x00",
+    )
     if mesh_data.textures or has_tint:
-        mat = _build_material(name_hint, mesh_data.textures, base_dir,
-                              mesh_data.tint_rgba, import_textures,
-                              use_diffuse_alpha=use_diffuse_alpha)
+        mat = _build_material(
+            name_hint,
+            mesh_data.textures,
+            base_dir,
+            mesh_data.tint_rgba,
+            import_textures,
+            use_diffuse_alpha=use_diffuse_alpha,
+        )
         obj.data.materials.append(mat)
 
-    return {'FINISHED'}, []
+    return {"FINISHED"}, []
 
 
 # ============================================================================
@@ -355,15 +382,19 @@ _KEY_TYPE_VALUES = {
 def _mat4_from_list(vals):
     if len(vals) < 16:
         return Matrix.Identity(4)
-    return Matrix([
-        [vals[0],  vals[1],  vals[2],  vals[3]],
-        [vals[4],  vals[5],  vals[6],  vals[7]],
-        [vals[8],  vals[9],  vals[10], vals[11]],
-        [vals[12], vals[13], vals[14], vals[15]],
-    ]).transposed()
+    return Matrix(
+        [
+            [vals[0], vals[1], vals[2], vals[3]],
+            [vals[4], vals[5], vals[6], vals[7]],
+            [vals[8], vals[9], vals[10], vals[11]],
+            [vals[12], vals[13], vals[14], vals[15]],
+        ]
+    ).transposed()
+
 
 class _SyntheticKeyNode:
     """Minimal object mimicking an XNode AnimationKey for synthetic tracks."""
+
     __slots__ = ("_nums",)
 
     def __init__(self, nums_list):
@@ -371,6 +402,7 @@ class _SyntheticKeyNode:
 
     def nums(self):
         return self._nums
+
 
 def _compose_type4_from_trs(rot_node, scale_node, trans_node):
     """Compose per-channel TRS animation keys into a single type-4 (matrix)
@@ -385,6 +417,7 @@ def _compose_type4_from_trs(rot_node, scale_node, trans_node):
     to per-track processing, which handles arbitrary key densities correctly
     via Blender's separate F-curve channels.
     """
+
     def _parse(node, expected):
         nums = node.nums()
         if len(nums) < 2:
@@ -395,15 +428,16 @@ def _compose_type4_from_trs(rot_node, scale_node, trans_node):
         while i < len(nums) and len(out) < count:
             if i + 1 >= len(nums):
                 break
-            tick = nums[i]; i += 1
+            tick = nums[i]
+            i += 1
             i += 1
             if i + expected > len(nums):
                 break
-            out.append((tick, nums[i:i + expected]))
+            out.append((tick, nums[i : i + expected]))
             i += expected
         return out
 
-    rot_frames   = _parse(rot_node,   4)
+    rot_frames = _parse(rot_node, 4)
     scale_frames = _parse(scale_node, 3)
     trans_frames = _parse(trans_node, 3)
     if not rot_frames or not scale_frames or not trans_frames:
@@ -426,42 +460,81 @@ def _compose_type4_from_trs(rot_node, scale_node, trans_node):
 
     out_nums = [4.0, float(n)]
     for i in range(n):
-        tick, rot_vals   = rot_frames[i]
-        _,    scale_vals = scale_frames[i]
-        _,    trans_vals = trans_frames[i]
+        tick, rot_vals = rot_frames[i]
+        _, scale_vals = scale_frames[i]
+        _, trans_vals = trans_frames[i]
 
         w, x, y, z = rot_vals[:4]
         sx, sy, sz = scale_vals[:3]
         tx, ty, tz = trans_vals[:3]
 
-        r00 = 1.0 - 2.0*(y*y + z*z);  r01 =       2.0*(x*y - z*w);  r02 =       2.0*(x*z + y*w)
-        r10 =       2.0*(x*y + z*w);  r11 = 1.0 - 2.0*(x*x + z*z);  r12 =       2.0*(y*z - x*w)
-        r20 =       2.0*(x*z - y*w);  r21 =       2.0*(y*z + x*w);  r22 = 1.0 - 2.0*(x*x + y*y)
+        r00 = 1.0 - 2.0 * (y * y + z * z)
+        r01 = 2.0 * (x * y - z * w)
+        r02 = 2.0 * (x * z + y * w)
+        r10 = 2.0 * (x * y + z * w)
+        r11 = 1.0 - 2.0 * (x * x + z * z)
+        r12 = 2.0 * (y * z - x * w)
+        r20 = 2.0 * (x * z - y * w)
+        r21 = 2.0 * (y * z + x * w)
+        r22 = 1.0 - 2.0 * (x * x + y * y)
 
-        r00 *= sx; r01 *= sx; r02 *= sx
-        r10 *= sy; r11 *= sy; r12 *= sy
-        r20 *= sz; r21 *= sz; r22 *= sz
+        r00 *= sx
+        r01 *= sx
+        r02 *= sx
+        r10 *= sy
+        r11 *= sy
+        r12 *= sy
+        r20 *= sz
+        r21 *= sz
+        r22 *= sz
 
-        out_nums.extend([
-            tick, 16.0,
-            r00, r01, r02, 0.0,
-            r10, r11, r12, 0.0,
-            r20, r21, r22, 0.0,
-            tx,  ty,  tz,  1.0,
-        ])
+        out_nums.extend(
+            [
+                tick,
+                16.0,
+                r00,
+                r01,
+                r02,
+                0.0,
+                r10,
+                r11,
+                r12,
+                0.0,
+                r20,
+                r21,
+                r22,
+                0.0,
+                tx,
+                ty,
+                tz,
+                1.0,
+            ]
+        )
 
     return _SyntheticKeyNode(out_nums)
 
+
 def _axis_matrix(axis_forward, axis_up):
-    _AXES = {'X':(1,0,0),'-X':(-1,0,0),'Y':(0,1,0),'-Y':(0,-1,0),'Z':(0,0,1),'-Z':(0,0,-1)}
+    _AXES = {
+        "X": (1, 0, 0),
+        "-X": (-1, 0, 0),
+        "Y": (0, 1, 0),
+        "-Y": (0, -1, 0),
+        "Z": (0, 0, 1),
+        "-Z": (0, 0, -1),
+    }
     import numpy as np
+
     fwd = np.array(_AXES[axis_forward], float)
-    upv = np.array(_AXES[axis_up],      float)
+    upv = np.array(_AXES[axis_up], float)
     rgt = np.cross(fwd, upv)
-    F   = np.column_stack([rgt, upv, fwd])
-    B   = np.column_stack([(1,0,0),(0,0,1),(0,1,0)])
-    M3  = (B @ np.linalg.inv(F)).astype(float)
-    return Matrix([[float(M3[r,c]) for c in range(3)] + [0] for r in range(3)] + [[0,0,0,1]])
+    F = np.column_stack([rgt, upv, fwd])
+    B = np.column_stack([(1, 0, 0), (0, 0, 1), (0, 1, 0)])
+    M3 = (B @ np.linalg.inv(F)).astype(float)
+    return Matrix(
+        [[float(M3[r, c]) for c in range(3)] + [0] for r in range(3)] + [[0, 0, 0, 1]]
+    )
+
 
 def _collect_offset_matrices(root_node):
     bind_poses = {}
@@ -495,8 +568,9 @@ def _collect_offset_matrices(root_node):
                 # handle this bone.
                 ident = Matrix.Identity(4)
                 diff = offset_mat - ident
-                is_identity = max(abs(diff[r][c]) for r in range(4)
-                                                 for c in range(4)) < 1e-5
+                is_identity = (
+                    max(abs(diff[r][c]) for r in range(4) for c in range(4)) < 1e-5
+                )
                 if is_identity:
                     for child in node.children:
                         walk(child)
@@ -515,7 +589,7 @@ def _collect_offset_matrices(root_node):
 def _collect_ftm_globals(frame_node, parent_mat=None):
     if parent_mat is None:
         parent_mat = Matrix.Identity(4)
-    ftm       = frame_node.child("FrameTransformMatrix")
+    ftm = frame_node.child("FrameTransformMatrix")
     local_mat = _mat4_from_list(ftm.nums()) if ftm else Matrix.Identity(4)
     global_mat = parent_mat @ local_mat
     result = {frame_node.name: global_mat}
@@ -523,6 +597,7 @@ def _collect_ftm_globals(frame_node, parent_mat=None):
         if child.kind == "Frame":
             result.update(_collect_ftm_globals(child, global_mat))
     return result
+
 
 def _compute_animation_frame_range(root):
     min_f = None
@@ -533,9 +608,9 @@ def _compute_animation_frame_range(root):
                 nums = key_node.nums()
                 if len(nums) < 2:
                     continue
-                key_type  = int(nums[0])
+                key_type = int(nums[0])
                 key_count = int(nums[1])
-                expected  = _KEY_TYPE_VALUES.get(key_type)
+                expected = _KEY_TYPE_VALUES.get(key_type)
                 if expected is None:
                     continue
 
@@ -555,6 +630,7 @@ def _compute_animation_frame_range(root):
     if min_f is None:
         return None
     return int(round(min_f)), int(round(max_f))
+
 
 def _build_cross_content_search_paths(basename: str, anchor_dir: str) -> list:
     """Return candidate absolute paths for a texture that may live in a
@@ -579,13 +655,18 @@ def _build_cross_content_search_paths(basename: str, anchor_dir: str) -> list:
          every folder inside it (e.g. Content/Models/Bugs/*/Banana_D.dds).
     """
     candidates = []
-    stem_full = os.path.splitext(basename)[0]   # "Banana_D"
+    stem_full = os.path.splitext(basename)[0]  # "Banana_D"
 
     # Strip common material-map suffixes to get the likely folder name.
-    dir_stem = re.sub(
-        r'_(?:D|N|S|R|E|M|AO|ARM|Mask|Roughness|Metalness|Normal|Diffuse|Specular)$',
-        '', stem_full, flags=re.IGNORECASE
-    ) or stem_full   # "Banana"
+    dir_stem = (
+        re.sub(
+            r"_(?:D|N|S|R|E|M|AO|ARM|Mask|Roughness|Metalness|Normal|Diffuse|Specular)$",
+            "",
+            stem_full,
+            flags=re.IGNORECASE,
+        )
+        or stem_full
+    )  # "Banana"
 
     # 1. Stem-named sibling at each ancestor level (highest priority)
     ancestor = anchor_dir
@@ -640,31 +721,34 @@ def _build_cross_content_search_paths(basename: str, anchor_dir: str) -> list:
     return candidates
 
 
-def import_xcache(context, filepath,
-             use_apply_transform=True,
-             global_scale=1.0,
-             axis_forward="-Z",
-             axis_up="Y",
-             import_normals=True,
-             import_uvs=True,
-             import_materials=True,
-             import_textures=True,
-             import_armature=True,
-             import_weights=True,
-             import_animation=True,
-             anim_fps=0.0,
-             set_frame_range=True,
-             rest_pose_source='BIND',
-             infer_sharps=True,
-             sharp_angle_deg=75.0,
-             lock_root_translation=False,
-             lock_leaf_translation=False,
-             smooth_shade_from_faces=False,
-             weld_duplicate_verts=True,
-             use_diffuse_alpha=True,
-             split_submeshes=True,
-             triangulate_quads=True,
-             **_):
+def import_xcache(
+    context,
+    filepath,
+    use_apply_transform=True,
+    global_scale=1.0,
+    axis_forward="-Z",
+    axis_up="Y",
+    import_normals=True,
+    import_uvs=True,
+    import_materials=True,
+    import_textures=True,
+    import_armature=True,
+    import_weights=True,
+    import_animation=True,
+    anim_fps=0.0,
+    set_frame_range=True,
+    rest_pose_source="BIND",
+    infer_sharps=True,
+    sharp_angle_deg=75.0,
+    lock_root_translation=False,
+    lock_leaf_translation=False,
+    smooth_shade_from_faces=False,
+    weld_duplicate_verts=True,
+    use_diffuse_alpha=True,
+    split_submeshes=True,
+    triangulate_quads=True,
+    **_,
+):
 
     # rest_pose_source default ('BIND') is now used as-is for both
     # .x and .xcache files. Verified empirically (vert centroid vs
@@ -682,21 +766,9 @@ def import_xcache(context, filepath,
     # power users who want Fragmotion-style FTM-rest behaviour.
 
     root = parse_xcache_file(
-                        filepath,
-                        split_submeshes=split_submeshes,
-                    )
-
-    def _count(node, kind):
-        n = 0
-        if node.kind == kind:
-            n += 1
-        for c in node.children:
-            n += _count(c, kind)
-        return n
-    n_frames = _count(root, 'Frame')
-    n_meshes = _count(root, 'Mesh')
-    n_sw = _count(root, 'SkinWeights')
-    n_anim = _count(root, 'Animation')
+        filepath,
+        split_submeshes=split_submeshes,
+    )
 
     base_dir = os.path.dirname(filepath)
 
@@ -710,14 +782,14 @@ def import_xcache(context, filepath,
     # .x and .xcache have no template equivalent.
     passthrough_templates = []
     passthrough_frames = {}
-    passthrough_decldata = {}        # mesh_name -> raw DeclData block text
-    passthrough_xskinheader = {}     # mesh_name -> raw XSkinMeshHeader block text
-    passthrough_animations = {}      # target_name -> raw Animation block text
+    passthrough_decldata = {}  # mesh_name -> raw DeclData block text
+    passthrough_xskinheader = {}  # mesh_name -> raw XSkinMeshHeader block text
+    passthrough_animations = {}  # target_name -> raw Animation block text
     try:
-        with open(filepath, 'rb') as _fh:
+        with open(filepath, "rb") as _fh:
             _raw = _fh.read(64)
         if _raw[:16] == b"xof 0303txt 0032":
-            with open(filepath, 'r', encoding='latin-1', errors='replace') as _fh:
+            with open(filepath, "r", encoding="latin-1", errors="replace") as _fh:
                 _full_text = _fh.read()
 
             def _extract_braced_block(text, start_idx):
@@ -725,9 +797,9 @@ def import_xcache(context, filepath,
                 depth = 0
                 j = start_idx
                 while j < len(text):
-                    if text[j] == '{':
+                    if text[j] == "{":
                         depth += 1
-                    elif text[j] == '}':
+                    elif text[j] == "}":
                         depth -= 1
                         if depth == 0:
                             return j + 1
@@ -735,61 +807,61 @@ def import_xcache(context, filepath,
                 return j
 
             # All `template Foo { ... }` declarations
-            for _m in re.finditer(r'\btemplate\s+\w+\s*\{', _full_text):
+            for _m in re.finditer(r"\btemplate\s+\w+\s*\{", _full_text):
                 _start = _m.start()
-                _open_brace = _full_text.index('{', _start)
+                _open_brace = _full_text.index("{", _start)
                 _end = _extract_braced_block(_full_text, _open_brace)
                 passthrough_templates.append(_full_text[_start:_end].rstrip())
 
             # Any top-level Frame in the source file
             top_frame_names = {c.name for c in root.children if c.kind == "Frame"}
-            for _m in re.finditer(r'(?m)^\s*Frame\s+(\w+)\s*\{', _full_text):
+            for _m in re.finditer(r"(?m)^\s*Frame\s+(\w+)\s*\{", _full_text):
                 _name = _m.group(1)
                 if _name not in top_frame_names:
                     continue
-                _start = _full_text.find('Frame', _m.start())
-                _open_brace = _full_text.index('{', _start)
+                _start = _full_text.find("Frame", _m.start())
+                _open_brace = _full_text.index("{", _start)
                 _end = _extract_braced_block(_full_text, _open_brace)
                 passthrough_frames[_name] = _full_text[_start:_end].rstrip()
 
             # Per-mesh DeclData and XSkinMeshHeader
-            for _m in re.finditer(r'(?m)^\s*Mesh\s+(\w+)\s*\{', _full_text):
+            for _m in re.finditer(r"(?m)^\s*Mesh\s+(\w+)\s*\{", _full_text):
                 _mesh_name = _m.group(1)
-                _mesh_start = _full_text.find('Mesh', _m.start())
-                _mesh_open  = _full_text.index('{', _mesh_start)
-                _mesh_end   = _extract_braced_block(_full_text, _mesh_open)
-                _mesh_text  = _full_text[_mesh_start:_mesh_end]
+                _mesh_start = _full_text.find("Mesh", _m.start())
+                _mesh_open = _full_text.index("{", _mesh_start)
+                _mesh_end = _extract_braced_block(_full_text, _mesh_open)
+                _mesh_text = _full_text[_mesh_start:_mesh_end]
                 for _kind, _stash in [
-                    ('DeclData', passthrough_decldata),
-                    ('XSkinMeshHeader', passthrough_xskinheader),
+                    ("DeclData", passthrough_decldata),
+                    ("XSkinMeshHeader", passthrough_xskinheader),
                 ]:
-                    _km = re.search(r'\b' + _kind + r'\s*\{', _mesh_text)
+                    _km = re.search(r"\b" + _kind + r"\s*\{", _mesh_text)
                     if _km is None:
                         continue
                     _ks = _km.start()
-                    _ko = _mesh_text.index('{', _ks)
+                    _ko = _mesh_text.index("{", _ks)
                     _ke = _extract_braced_block(_mesh_text, _ko)
                     _stash[_mesh_name] = _mesh_text[_ks:_ke].rstrip()
 
             # Per-target Animation blocks (so non-bone frames like
             # Translation_Data still get a track on round-trip)
-            for _m in re.finditer(r'AnimationSet\s+\w+\s*\{', _full_text):
-                _line_start = _full_text.rfind('\n', 0, _m.start()) + 1
-                if 'template' in _full_text[_line_start:_m.start()]:
+            for _m in re.finditer(r"AnimationSet\s+\w+\s*\{", _full_text):
+                _line_start = _full_text.rfind("\n", 0, _m.start()) + 1
+                if "template" in _full_text[_line_start : _m.start()]:
                     continue
                 _as_start = _m.start()
-                _as_open  = _full_text.index('{', _as_start)
-                _as_end   = _extract_braced_block(_full_text, _as_open)
-                _as_text  = _full_text[_as_start:_as_end]
-                for _am in re.finditer(r'Animation\s*\{', _as_text):
-                    _aline_start = _as_text.rfind('\n', 0, _am.start()) + 1
-                    if 'template' in _as_text[_aline_start:_am.start()]:
+                _as_open = _full_text.index("{", _as_start)
+                _as_end = _extract_braced_block(_full_text, _as_open)
+                _as_text = _full_text[_as_start:_as_end]
+                for _am in re.finditer(r"Animation\s*\{", _as_text):
+                    _aline_start = _as_text.rfind("\n", 0, _am.start()) + 1
+                    if "template" in _as_text[_aline_start : _am.start()]:
                         continue
                     _a_start = _am.start()
-                    _a_open  = _as_text.index('{', _a_start)
-                    _a_end   = _extract_braced_block(_as_text, _a_open)
-                    _a_text  = _as_text[_a_start:_a_end]
-                    _ref = re.search(r'\{\s*(\w+)\s*\}', _a_text)
+                    _a_open = _as_text.index("{", _a_start)
+                    _a_end = _extract_braced_block(_as_text, _a_open)
+                    _a_text = _as_text[_a_start:_a_end]
+                    _ref = re.search(r"\{\s*(\w+)\s*\}", _a_text)
                     if _ref:
                         passthrough_animations[_ref.group(1)] = _a_text.rstrip()
                 break
@@ -826,7 +898,7 @@ def import_xcache(context, filepath,
 
     # When the source is a .xcache binary, record the absolute path so that
     # _build_mesh can stash it on each created mesh object for exporter use.
-    if filepath.lower().endswith('.xcache'):
+    if filepath.lower().endswith(".xcache"):
         state._source_xcache_path = os.path.abspath(filepath)
 
     # Create a collection named after the file (without extension) and link it
@@ -882,8 +954,6 @@ def import_xcache(context, filepath,
         # files these disagree; matrixOffset is the ground truth for
         # binding, FTM drives rest-pose orientation. Bones without
         # SkinWeights data fall back to FTM.
-        n_with_bind = len(bind_poses)
-        n_without_bind = len(ftm_globals) - n_with_bind
 
         # Axis conversion DirectX (left-handed, Y-up) → Blender
         # (right-handed, Z-up). Previously a further 180° spin about Z
@@ -929,19 +999,26 @@ def import_xcache(context, filepath,
     for anim_set in [n for n in root.children if n.kind == "AnimationSet"]:
         for anim_node in anim_set.children_of("Animation"):
             ref = anim_node.child("REF")
-            if not ref: continue
-            bname = next((v for t,v in ref.values if t=="WORD"), None)
-            if not bname: continue
+            if not ref:
+                continue
+            bname = next((v for t, v in ref.values if t == "WORD"), None)
+            if not bname:
+                continue
             for key_node in anim_node.children_of("AnimationKey"):
                 knums = key_node.nums()
-                if len(knums) < 2 or int(knums[0]) != 1: continue
+                if len(knums) < 2 or int(knums[0]) != 1:
+                    continue
                 scale_vals = []
                 i = 2
                 while i < len(knums):
-                    if i + 1 >= len(knums): break
-                    i += 1; i += 1
-                    if i + 3 > len(knums): break
-                    scale_vals.append(knums[i]); i += 3
+                    if i + 1 >= len(knums):
+                        break
+                    i += 1
+                    i += 1
+                    if i + 3 > len(knums):
+                        break
+                    scale_vals.append(knums[i])
+                    i += 3
                 if scale_vals and all(abs(v) < 0.01 for v in scale_vals):
                     state._always_hidden_bones.add(bname)
 
@@ -974,15 +1051,16 @@ def import_xcache(context, filepath,
             # the scene frame range matches where the keys actually land.
             if state.tick_scale != 1.0:
                 fstart = int(round(fstart * state.tick_scale))
-                fend   = int(round(fend   * state.tick_scale))
+                fend = int(round(fend * state.tick_scale))
 
             if fend < fstart:
                 fend = fstart
             context.scene.frame_start = fstart
-            context.scene.frame_end   = fend
+            context.scene.frame_end = fend
             context.scene.frame_set(fstart)
 
     return {"FINISHED"}
+
 
 def _get_or_create_fcurve(action, anim_data, data_path, index, group_name):
     if hasattr(action, "fcurves"):
@@ -998,13 +1076,16 @@ def _get_or_create_fcurve(action, anim_data, data_path, index, group_name):
     if not layer.strips:
         layer.strips.new(type="KEYFRAME")
     strip = layer.strips[0]
-    cb = strip.channelbag(slot, ensure=True) if slot is not None else (
-        strip.channelbags[0] if strip.channelbags else strip.channelbags.new()
+    cb = (
+        strip.channelbag(slot, ensure=True)
+        if slot is not None
+        else (strip.channelbags[0] if strip.channelbags else strip.channelbags.new())
     )
     fc = cb.fcurves.find(data_path, index=index)
     if fc is None:
         fc = cb.fcurves.new(data_path, index=index, group_name=group_name)
     return fc
+
 
 def _decode_decl_data(decl_node, expected_vert_count):
     """Decode a DeclData node into per-vertex normals and UVs.
@@ -1034,6 +1115,7 @@ def _decode_decl_data(decl_node, expected_vert_count):
     if the data is malformed.
     """
     import struct
+
     nums = decl_node.nums()
     if not nums:
         return None
@@ -1047,26 +1129,31 @@ def _decode_decl_data(decl_node, expected_vert_count):
         elements = []
         i = 1
         for _ in range(n_elements):
-            t  = int(nums[i]);     i += 1
-            m  = int(nums[i]);     i += 1
-            u  = int(nums[i]);     i += 1
-            ui = int(nums[i]);     i += 1
+            t = int(nums[i])
+            i += 1
+            m = int(nums[i])
+            i += 1
+            u = int(nums[i])
+            i += 1
+            ui = int(nums[i])
+            i += 1
             elements.append((t, m, u, ui))
-        n_dwords = int(nums[i]); i += 1
+        n_dwords = int(nums[i])
+        i += 1
         if i + n_dwords > len(nums):
             return None
         # Reinterpret each DWORD's 32 bits as a float.
         floats = []
         for j in range(n_dwords):
             raw = int(nums[i + j]) & 0xFFFFFFFF
-            floats.append(struct.unpack('<f', struct.pack('<I', raw))[0])
+            floats.append(struct.unpack("<f", struct.pack("<I", raw))[0])
 
         # Compute per-vertex stride in floats and locate normal / UV
         # offsets within each vertex.
         type_floats = {1: 2, 2: 3, 3: 4}
         stride = 0
         norm_off = None
-        uv_off   = None
+        uv_off = None
         for t, _m, u, _ui in elements:
             n_f = type_floats.get(t)
             if n_f is None:
@@ -1093,7 +1180,9 @@ def _decode_decl_data(decl_node, expected_vert_count):
             per_vert_normals = []
             for v in range(n_verts):
                 base = v * stride + off
-                per_vert_normals.append((floats[base], floats[base + 1], floats[base + 2]))
+                per_vert_normals.append(
+                    (floats[base], floats[base + 1], floats[base + 2])
+                )
         per_vert_uvs = None
         if uv_off is not None:
             off, _ = uv_off
@@ -1160,7 +1249,7 @@ def _apply_custom_normals(me, loop_normals):
             safe_normals.append((0.0, 0.0, 1.0))
             n_bad += 1
             continue
-        mag = (nx*nx + ny*ny + nz*nz) ** 0.5
+        mag = (nx * nx + ny * ny + nz * nz) ** 0.5
         if mag < 1e-6:
             safe_normals.append((0.0, 0.0, 1.0))
             n_bad += 1
@@ -1195,7 +1284,6 @@ def _apply_custom_normals(me, loop_normals):
             _clear_custom_split_normals(me)
             return
     else:
-
         attr = me.attributes.get("custom_normal")
         if attr is None:
             attr = me.attributes.new("custom_normal", "FLOAT_VECTOR", "CORNER")
@@ -1236,19 +1324,20 @@ def _clear_custom_split_normals(me):
     except Exception:
         pass
 
+
 class _ImportState:
     def __init__(self, **kw):
         for k, v in kw.items():
             setattr(self, k, v)
-        self.materials:          dict  = {}
-        self.armature_obj:       object = None
-        self.ticks_per_second:   float  = 30.0
-        self.tick_scale:         float  = 1.0   # multiplier from file ticks → Blender frames
-        self.created_objects:    list   = []
-        self._conv_mat           = Matrix.Identity(4)
+        self.materials: dict = {}
+        self.armature_obj: object = None
+        self.ticks_per_second: float = 30.0
+        self.tick_scale: float = 1.0  # multiplier from file ticks → Blender frames
+        self.created_objects: list = []
+        self._conv_mat = Matrix.Identity(4)
         self._always_hidden_bones: set = set()
-        self._skel_root_names:   set    = set()
-        self._bone_rebind:       dict   = {}
+        self._skel_root_names: set = set()
+        self._bone_rebind: dict = {}
         # Per-mesh source-text passthroughs (filled in by import_x);
         # default to empty so non-import code paths don't crash.
         self._passthrough_decldata: dict = {}
@@ -1309,19 +1398,21 @@ class _ImportState:
         if len(nums) >= 5:
             shininess = nums[4]
             # The .x format pre-dates PBR.  Most exporters (Blender's old
-            raw_roughness = max(0.0, min(1.0,
-                1.0 - math.log(max(shininess, 1e-6)) / math.log(128.0)))
+            raw_roughness = max(
+                0.0, min(1.0, 1.0 - math.log(max(shininess, 1e-6)) / math.log(128.0))
+            )
             ROUGHNESS_FLOOR = 0.5
             roughness = ROUGHNESS_FLOOR + raw_roughness * (1.0 - ROUGHNESS_FLOOR)
             bsdf.inputs["Roughness"].default_value = roughness
             mat["_x_power"] = shininess
         if len(nums) >= 8:
             sr, sg, sb = nums[5], nums[6], nums[7]
-            spec_val   = (sr + sg + sb) / 3.0
+            spec_val = (sr + sg + sb) / 3.0
             # Same rationale as above — the raw spec value in .x files is
             spec_val = min(spec_val, 0.2)
-            spec_input = (bsdf.inputs.get("Specular IOR Level")
-                          or bsdf.inputs.get("Specular"))
+            spec_input = bsdf.inputs.get("Specular IOR Level") or bsdf.inputs.get(
+                "Specular"
+            )
             if spec_input:
                 spec_input.default_value = spec_val
             mat["_x_specular"] = (sr, sg, sb)
@@ -1334,7 +1425,7 @@ class _ImportState:
         if tex_node:
             strs = tex_node.strings()
             if strs:
-                original_tex_name = strs[0].replace('\\\\', '\\')
+                original_tex_name = strs[0].replace("\\\\", "\\")
                 mat["_x_texture_filename"] = original_tex_name
 
         # Fallback for xcache files that embed no texture paths (e.g. Queen.xcache):
@@ -1345,7 +1436,7 @@ class _ImportState:
         if not original_tex_name and self.import_textures:
             mat_name = node.name or ""
             # e.g. "QueenMaterial1" -> "Queen", "QueenMaterial" -> "Queen"
-            base = re.sub(r'Material\d*$', '', mat_name) or mat_name
+            base = re.sub(r"Material\d*$", "", mat_name) or mat_name
             # Try common Bugsnax/Horsepower texture naming patterns:
             #   Queen.dds, Queen_D.dds, QueenMaterial1.dds, Queen_1_D.dds, …
             convention_tex_candidates = [
@@ -1355,7 +1446,7 @@ class _ImportState:
                 f"{mat_name}_D.dds",
             ]
             # Extract material index suffix if present (e.g. "1" from "QueenMaterial1")
-            idx_match = re.search(r'(\d+)$', mat_name)
+            idx_match = re.search(r"(\d+)$", mat_name)
             if idx_match:
                 idx = idx_match.group(1)
                 convention_tex_candidates += [
@@ -1368,7 +1459,7 @@ class _ImportState:
             search_paths = []
             full_path = None  # canonical "intended" path for placeholder
             if original_tex_name:
-                tex_path  = original_tex_name.replace("\\", os.sep).replace("/", os.sep)
+                tex_path = original_tex_name.replace("\\", os.sep).replace("/", os.sep)
                 full_path = os.path.join(base_dir, tex_path)
                 tex_basename = os.path.basename(tex_path)
                 tex_subparts = tex_path.split(os.sep)
@@ -1405,7 +1496,17 @@ class _ImportState:
                 )
 
             # For each candidate location, also try alternate extensions.
-            alt_exts = [".png", ".jpg", ".jpeg", ".tga", ".dds", ".bmp", ".tif", ".tiff", ".webp"]
+            alt_exts = [
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".tga",
+                ".dds",
+                ".bmp",
+                ".tif",
+                ".tiff",
+                ".webp",
+            ]
 
             def _expand_candidates(p):
                 yield p
@@ -1447,12 +1548,15 @@ class _ImportState:
                     img = bpy.data.images.get(placeholder_name)
                     if img is None:
                         img = bpy.data.images.new(
-                            placeholder_name, width=1, height=1, alpha=False,
+                            placeholder_name,
+                            width=1,
+                            height=1,
+                            alpha=False,
                         )
                     # Point the placeholder at the path we wanted —
                     try:
                         img.filepath = full_path
-                        img.source = 'FILE'
+                        img.source = "FILE"
                     except Exception:
                         pass
                 except Exception:
@@ -1488,7 +1592,7 @@ class _ImportState:
                 # opaque ones transparent. The right answer is to detect
                 # real transparency per-texture and only blend those,
                 # using smooth BLEND so they aren't grainy.)
-                if getattr(self, 'use_diffuse_alpha', False):
+                if getattr(self, "use_diffuse_alpha", False):
                     try:
                         has_alpha = self._image_has_transparency(img)
                         if has_alpha:
@@ -1511,7 +1615,7 @@ class _ImportState:
                             # the specific transparent areas are
                             # transparent, the rest is solid, and there's
                             # no HASHED-style graininess.
-                            mat.blend_method = 'CLIP'
+                            mat.blend_method = "CLIP"
                             try:
                                 # 0.5: alpha >= 0.5 stays solid, < 0.5 is
                                 # cut out. Keeps near-opaque pixels solid.
@@ -1529,7 +1633,7 @@ class _ImportState:
                             # Opaque texture: leave the material opaque
                             # and do NOT wire alpha, so it renders solid.
                             try:
-                                mat.blend_method = 'OPAQUE'
+                                mat.blend_method = "OPAQUE"
                             except Exception:
                                 pass
                     except Exception:
@@ -1577,7 +1681,7 @@ class _ImportState:
                 channels = getattr(img, "channels", 0)
                 if depth in (8, 24) or (channels and channels < 4):
                     return False
-                n = len(img.pixels)            # length read is cheap
+                n = len(img.pixels)  # length read is cheap
                 if n < 4 or channels < 4:
                     return False
 
@@ -1585,9 +1689,10 @@ class _ImportState:
                 buf = None
                 try:
                     import numpy as np
+
                     buf = np.empty(n, dtype=np.float32)
                     img.pixels.foreach_get(buf)
-                    alpha = buf[3::channels]    # every channel-th value, offset 3
+                    alpha = buf[3::channels]  # every channel-th value, offset 3
                     # Any meaningfully sub-1.0 alpha → real transparency.
                     return bool((alpha < 0.996).any())
                 except Exception:
@@ -1595,7 +1700,7 @@ class _ImportState:
                     # slicing img.pixels[:] (one C call), then a plain
                     # Python min over the alpha slice.
                     try:
-                        flat = img.pixels[:]    # single bulk copy to a list
+                        flat = img.pixels[:]  # single bulk copy to a list
                         amin = 1.0
                         for a in flat[3::channels]:
                             if a < amin:
@@ -1614,22 +1719,23 @@ class _ImportState:
 
     def build_armature(self, frame_nodes, context, bind_poses, ftm_globals, conv_mat):
         self._conv_mat = conv_mat
-        self._bind_poses = bind_poses   # stashed for _build_mesh LBS pre-transform
+        self._bind_poses = bind_poses  # stashed for _build_mesh LBS pre-transform
 
-        use_ftm_rest = (self.rest_pose_source == 'FRAME_TRANSFORM')
+        use_ftm_rest = self.rest_pose_source == "FRAME_TRANSFORM"
         self._bone_rebind = {}
 
         # A Frame is a skeleton root if it isn't carrying a Mesh.
         # (Testing for "has Frame children" used to drop leaf bones
         # in flat-hierarchy skeletons.)
-        skel_roots = [f for f in frame_nodes
-                      if not any(c.kind == "Mesh" for c in f.children)]
+        skel_roots = [
+            f for f in frame_nodes if not any(c.kind == "Mesh" for c in f.children)
+        ]
 
         self._skel_root_names = {f.name for f in skel_roots}
 
         arm_data = bpy.data.armatures.new("Armature")
         arm_data.display_type = "STICK"
-        arm_obj  = bpy.data.objects.new("Armature", arm_data)
+        arm_obj = bpy.data.objects.new("Armature", arm_data)
         self._import_collection.objects.link(arm_obj)
         self.armature_obj = arm_obj
         self.created_objects.append(arm_obj)
@@ -1638,15 +1744,13 @@ class _ImportState:
         context.view_layer.objects.active = arm_obj
         bpy.ops.object.mode_set(mode="EDIT")
 
-        bone_count     = [0]
+        bone_count = [0]
         fallback_count = [0]
 
         def add_bone(frame_node, parent_edit_bone):
             name = frame_node.name or "Bone"
-            parent_name = parent_edit_bone.name if parent_edit_bone else None
 
             if use_ftm_rest:
-
                 # FTM-rest path: bone.matrix_local = FTM_global. Anim
                 # keys are absolute local TRS replacements for FTM.
                 # `_bone_rebind` is a safety net for files where FTM
@@ -1662,8 +1766,12 @@ class _ImportState:
                 # so they line up with the FTM-positioned bone. Mixing
                 # the two (Knee at bind, Hip at FTM) breaks the chain.
 
-                new_rest_bl = conv_mat @ ftm_globals[name] if name in ftm_globals else None
-                old_bind_bl = conv_mat @ bind_poses[name]  if name in bind_poses  else None
+                new_rest_bl = (
+                    conv_mat @ ftm_globals[name] if name in ftm_globals else None
+                )
+                old_bind_bl = (
+                    conv_mat @ bind_poses[name] if name in bind_poses else None
+                )
                 if new_rest_bl is None:
                     new_rest_bl = old_bind_bl
                 if new_rest_bl is None:
@@ -1679,7 +1787,6 @@ class _ImportState:
                 if name not in bind_poses:
                     fallback_count[0] += 1
             else:
-
                 if name in bind_poses:
                     rest_mat = conv_mat @ bind_poses[name]
                 elif name in ftm_globals:
@@ -1720,14 +1827,15 @@ class _ImportState:
                 actual_x = eb.matrix.to_3x3().col[0].normalized()
                 if actual_x.dot(target_x) < 0.99:
                     base_roll = eb.roll
-                    best_diff = float('inf')
+                    best_diff = float("inf")
                     best_roll = base_roll
                     # Candidates are k * 90° for k in {-1, 0, 1, 2}; this
                     # covers all four distinct roll offsets modulo 2π.
-                    for delta in (0.0, math.pi/2, math.pi, -math.pi/2):
+                    for delta in (0.0, math.pi / 2, math.pi, -math.pi / 2):
                         eb.roll = base_roll + delta
-                        diff = (eb.matrix.to_3x3().col[0].normalized()
-                                - target_x).length
+                        diff = (
+                            eb.matrix.to_3x3().col[0].normalized() - target_x
+                        ).length
                         if diff < best_diff:
                             best_diff = diff
                             best_roll = base_roll + delta
@@ -1754,7 +1862,7 @@ class _ImportState:
     def import_frame_meshes(self, frame_node, context, parent_matrix=None):
         if parent_matrix is None:
             parent_matrix = Matrix.Identity(4)
-        ftm       = frame_node.child("FrameTransformMatrix")
+        ftm = frame_node.child("FrameTransformMatrix")
         local_mat = _mat4_from_list(ftm.nums()) if ftm else Matrix.Identity(4)
         world_mat = parent_matrix @ local_mat
         for child in frame_node.children:
@@ -1777,8 +1885,8 @@ class _ImportState:
             return
 
         vcount = int(nums[0])
-        verts  = []
-        idx    = 1
+        verts = []
+        idx = 1
         for _ in range(vcount):
             if idx + 3 > len(nums):
                 break
@@ -1787,13 +1895,16 @@ class _ImportState:
 
         if idx >= len(nums):
             return
-        fcount = int(nums[idx]); idx += 1
-        faces  = []
+        fcount = int(nums[idx])
+        idx += 1
+        faces = []
         for _ in range(fcount):
             if idx >= len(nums):
                 break
-            n    = int(nums[idx]); idx += 1
-            face = [int(nums[idx + j]) for j in range(n)]; idx += n
+            n = int(nums[idx])
+            idx += 1
+            face = [int(nums[idx + j]) for j in range(n)]
+            idx += n
             faces.append(face)
 
         # Filter out degenerate faces: faces with fewer than 3 unique
@@ -1806,7 +1917,7 @@ class _ImportState:
         # apply face-indexed metadata (MeshNormals per-face indices,
         # material per-face indices, face_to_submesh) without
         # off-by-one errors.
-        _kept_face_src_idx = []      # post-filter idx -> source face idx
+        _kept_face_src_idx = []  # post-filter idx -> source face idx
         _filtered_faces = []
         n_degen_dropped = 0
         for fsi, face in enumerate(faces):
@@ -1822,7 +1933,7 @@ class _ImportState:
             _kept_face_src_idx.append(fsi)
         faces = _filtered_faces
 
-        me  = bpy.data.meshes.new(name_hint)
+        me = bpy.data.meshes.new(name_hint)
         obj = bpy.data.objects.new(name_hint, me)
         self._import_collection.objects.link(obj)
         self.created_objects.append(obj)
@@ -1859,13 +1970,13 @@ class _ImportState:
             obj["_x_frame_name"] = frame_name
 
         # Store the source filepath for xcache round-trip.
-        if hasattr(self, '_source_xcache_path') and self._source_xcache_path:
+        if hasattr(self, "_source_xcache_path") and self._source_xcache_path:
             obj["_x_source_xcache"] = self._source_xcache_path
             # Track sub-mesh order within this source xcache so the
             # exporter can emit per-mesh SkinWeights chunks in the
             # original order with correct chunk-index trailers. Counter
             # lives on the importer state, reset per import.
-            if not hasattr(self, '_submesh_counter'):
+            if not hasattr(self, "_submesh_counter"):
                 self._submesh_counter = 0
             obj["_x_submesh_idx"] = self._submesh_counter
             self._submesh_counter += 1
@@ -1878,11 +1989,11 @@ class _ImportState:
         # `split_source_mesh` is the name of the ORIGINAL pre-split
         # mesh (e.g. 'BoatGeoLowShape'). `split_group_idx` is this
         # object's position in the split (0 = first material's faces).
-        node_meta = getattr(mesh_node, 'meta', None)
-        if node_meta and 'split_source_mesh' in node_meta:
-            obj["_x_split_source_mesh"] = node_meta['split_source_mesh']
-            obj["_x_split_group_idx"]   = node_meta['split_group_idx']
-            obj["_x_split_group_total"] = node_meta['split_group_total']
+        node_meta = getattr(mesh_node, "meta", None)
+        if node_meta and "split_source_mesh" in node_meta:
+            obj["_x_split_source_mesh"] = node_meta["split_source_mesh"]
+            obj["_x_split_group_idx"] = node_meta["split_group_idx"]
+            obj["_x_split_group_total"] = node_meta["split_group_total"]
 
         M = self._conv_mat
         s = self.global_scale
@@ -1903,7 +2014,7 @@ class _ImportState:
         if self.import_normals and normals_node:
             norms = normals_node.nums()
             if norms:
-                ncount       = int(norms[0])
+                ncount = int(norms[0])
                 normals_list = []
                 ni = 1
                 conv_rot = self._conv_mat.to_3x3()
@@ -1932,21 +2043,25 @@ class _ImportState:
                     if _src_ni >= len(norms):
                         _source_face_norm_indices.append([])
                         continue
-                    _src_cc = int(norms[_src_ni]); _src_ni += 1
-                    _src_idxs = [int(norms[_src_ni + k]) if _src_ni + k < len(norms) else 0
-                                 for k in range(_src_cc)]
+                    _src_cc = int(norms[_src_ni])
+                    _src_ni += 1
+                    _src_idxs = [
+                        int(norms[_src_ni + k]) if _src_ni + k < len(norms) else 0
+                        for k in range(_src_cc)
+                    ]
                     _src_ni += _src_cc
                     _source_face_norm_indices.append(_src_idxs)
                 ni = _src_ni
-                face_norm_indices = [_source_face_norm_indices[fsi]
-                                     for fsi in _kept_face_src_idx]
+                face_norm_indices = [
+                    _source_face_norm_indices[fsi] for fsi in _kept_face_src_idx
+                ]
                 # Pad missing entries with [0]*cc so downstream loops
                 # don't crash on short lists.
                 for k, face in enumerate(faces):
                     if len(face_norm_indices[k]) < len(face):
-                        face_norm_indices[k] = (
-                            list(face_norm_indices[k])
-                            + [0] * (len(face) - len(face_norm_indices[k])))
+                        face_norm_indices[k] = list(face_norm_indices[k]) + [0] * (
+                            len(face) - len(face_norm_indices[k])
+                        )
 
                 # Per-pre-vi normal lookup: average all the corner
                 # normals that referenced this pre-vi. (For most verts
@@ -1969,20 +2084,22 @@ class _ImportState:
                     for corner, _ in enumerate(poly.loop_indices):
                         ni_val = norm_idxs[corner] if corner < len(norm_idxs) else 0
                         loop_normals.append(
-                            normals_list[ni_val] if ni_val < len(normals_list) else (0.0, 0.0, 1.0)
+                            normals_list[ni_val]
+                            if ni_val < len(normals_list)
+                            else (0.0, 0.0, 1.0)
                         )
                 _pending_loop_normals = loop_normals
 
         uv_node = mesh_node.child("MeshTextureCoords")
         if self.import_uvs and uv_node:
-            uvnums  = uv_node.nums()
+            uvnums = uv_node.nums()
             uvcount = int(uvnums[0]) if uvnums else 0
             # Per Microsoft Learn MeshTextureCoords spec, nTextureCoords
             # MUST equal nVertices. Log a warning if they disagree,
             # then proceed with the smaller of the two to avoid
             # out-of-range UVs.
-            uvs     = []
-            ui      = 1
+            uvs = []
+            ui = 1
             for _ in range(uvcount):
                 if ui + 2 > len(uvnums):
                     break
@@ -2002,15 +2119,17 @@ class _ImportState:
         # standard blocks, decode it.
         decl_node = mesh_node.child("DeclData")
         if decl_node is not None and (
-            (_pending_loop_normals is None and self.import_normals) or
-            (not me.uv_layers and self.import_uvs)
+            (_pending_loop_normals is None and self.import_normals)
+            or (not me.uv_layers and self.import_uvs)
         ):
             decoded = _decode_decl_data(decl_node, vcount)
             if decoded is not None:
                 per_vert_normals, per_vert_uvs = decoded
-                if (per_vert_normals is not None
-                        and self.import_normals
-                        and _pending_loop_normals is None):
+                if (
+                    per_vert_normals is not None
+                    and self.import_normals
+                    and _pending_loop_normals is None
+                ):
                     conv_rot = self._conv_mat.to_3x3()
                     converted = [
                         (conv_rot @ Vector(n)).normalized().to_tuple()
@@ -2025,9 +2144,7 @@ class _ImportState:
                             else:
                                 loop_normals.append((0.0, 0.0, 1.0))
                     _pending_loop_normals = loop_normals
-                if (per_vert_uvs is not None
-                        and self.import_uvs
-                        and not me.uv_layers):
+                if per_vert_uvs is not None and self.import_uvs and not me.uv_layers:
                     uv_layer = me.uv_layers.new(name="UVMap")
                     for poly in me.polygons:
                         for loop_idx in poly.loop_indices:
@@ -2040,14 +2157,16 @@ class _ImportState:
         if self.import_materials and mat_list_node:
             mat_nums = mat_list_node.nums()
             if mat_nums:
-                face_mat_count   = int(mat_nums[1]) if len(mat_nums) > 1 else 0
+                face_mat_count = int(mat_nums[1]) if len(mat_nums) > 1 else 0
                 # Per Microsoft Learn MeshMaterialList spec, nFaceIndexes
                 # MUST equal the parent mesh's nFaces. Log a warning if
                 # they disagree, then clamp to avoid mis-assigning
                 # materials to non-existent faces.
-                face_mat_indices = [int(mat_nums[2 + i])
-                                    for i in range(min(face_mat_count, fcount))
-                                    if 2 + i < len(mat_nums)]
+                face_mat_indices = [
+                    int(mat_nums[2 + i])
+                    for i in range(min(face_mat_count, fcount))
+                    if 2 + i < len(mat_nums)
+                ]
 
                 # If degenerate faces were filtered before from_pydata,
                 # the surviving mesh polygons no longer match the
@@ -2055,8 +2174,7 @@ class _ImportState:
                 # material indices in the surviving-face order.
                 if len(_kept_face_src_idx) != fcount:
                     face_mat_indices = [
-                        face_mat_indices[fsi]
-                        if fsi < len(face_mat_indices) else 0
+                        face_mat_indices[fsi] if fsi < len(face_mat_indices) else 0
                         for fsi in _kept_face_src_idx
                     ]
 
@@ -2068,7 +2186,9 @@ class _ImportState:
                 ref_mats = []
                 for child in mat_list_node.children:
                     if child.kind == "REF":
-                        ref_name = next((v for t, v in child.values if t == "WORD"), None)
+                        ref_name = next(
+                            (v for t, v in child.values if t == "WORD"), None
+                        )
                         if ref_name and ref_name in self.materials:
                             ref_mats.append(self.materials[ref_name])
 
@@ -2076,7 +2196,8 @@ class _ImportState:
                 seen, used_mats = set(), []
                 for m in source:
                     if m.name not in seen:
-                        seen.add(m.name); used_mats.append(m)
+                        seen.add(m.name)
+                        used_mats.append(m)
 
                 for m in used_mats:
                     me.materials.append(m)
@@ -2120,14 +2241,16 @@ class _ImportState:
                     if influence_count == 0:
                         placeholder_bones.append(bone_name)
                         continue
-                indices = [int(sw_nums[1 + i])             for i in range(influence_count)]
-                weights = [sw_nums[1 + influence_count + i] for i in range(influence_count)]
+                indices = [int(sw_nums[1 + i]) for i in range(influence_count)]
+                weights = [
+                    sw_nums[1 + influence_count + i] for i in range(influence_count)
+                ]
                 pre_weld_skin.append((bone_name, list(zip(indices, weights))))
 
-            obj.matrix_world  = Matrix.Identity(4)
-            obj.parent        = self.armature_obj
-            arm_mod           = obj.modifiers.new("Armature", "ARMATURE")
-            arm_mod.object    = self.armature_obj
+            obj.matrix_world = Matrix.Identity(4)
+            obj.parent = self.armature_obj
+            arm_mod = obj.modifiers.new("Armature", "ARMATURE")
+            arm_mod.object = self.armature_obj
             arm_mod.use_vertex_groups = True
 
             arm_mod.use_deform_preserve_volume = True
@@ -2142,8 +2265,13 @@ class _ImportState:
                 # animating, and weld blends weights that approximate skin
                 # boundaries rather than preserving the file's exact authoring.
                 self._weld_and_assign_skin(
-                    obj, me, pre_weld_skin, _source_positions,
-                    _pending_per_vi_normal, _pending_loop_normals)
+                    obj,
+                    me,
+                    pre_weld_skin,
+                    _source_positions,
+                    _pending_per_vi_normal,
+                    _pending_loop_normals,
+                )
             else:
                 # Default: no weld. Assign skin weights per-vert directly,
                 # exactly as authored. Per-loop normals from MeshNormals
@@ -2161,15 +2289,14 @@ class _ImportState:
                 if bone_name not in obj.vertex_groups:
                     obj.vertex_groups.new(name=bone_name)
 
-
             # Apply vertex-position rebind AFTER weight assignment:
             # rebind uses pre-weld source positions for the key, while
             # pos_to_post_vis uses actual mesh positions. Running rebind
             # first puts them in different spaces → empty pre_to_post map
             # → all verts fall back to ROOT weight → mesh looks unweighted.
             if self._bone_rebind:
-                vert_accum      = [None] * len(me.vertices)
-                vert_weight_sum = [0.0]  * len(me.vertices)
+                vert_accum = [None] * len(me.vertices)
+                vert_weight_sum = [0.0] * len(me.vertices)
                 for bone_name, influences in pre_weld_skin:
                     rebind = self._bone_rebind.get(bone_name)
                     if rebind is None:
@@ -2187,12 +2314,12 @@ class _ImportState:
                     if accum is None or vert_weight_sum[vi] <= 0.0:
                         continue
                     v_old = me.vertices[vi].co
-                    v_h   = Vector((v_old.x, v_old.y, v_old.z, 1.0))
+                    v_h = Vector((v_old.x, v_old.y, v_old.z, 1.0))
                     v_new = accum @ v_h
-                    ws    = vert_weight_sum[vi]
-                    me.vertices[vi].co = Vector((v_new.x / ws,
-                                                 v_new.y / ws,
-                                                 v_new.z / ws))
+                    ws = vert_weight_sum[vi]
+                    me.vertices[vi].co = Vector(
+                        (v_new.x / ws, v_new.y / ws, v_new.z / ws)
+                    )
                 me.update()
 
             for poly in obj.data.polygons:
@@ -2209,7 +2336,6 @@ class _ImportState:
                     self._infer_sharps_from_normal_list(obj.data, _pending_loop_normals)
 
         else:
-
             obj.matrix_world = Matrix.Identity(4)
 
             for poly in obj.data.polygons:
@@ -2253,8 +2379,9 @@ class _ImportState:
         for bone_name, bone_map in accum.items():
             if not bone_map:
                 continue
-            vg = (obj.vertex_groups.get(bone_name)
-                  or obj.vertex_groups.new(name=bone_name))
+            vg = obj.vertex_groups.get(bone_name) or obj.vertex_groups.new(
+                name=bone_name
+            )
             for vi, w in bone_map.items():
                 vg.add([vi], w, "REPLACE")
 
@@ -2285,7 +2412,6 @@ class _ImportState:
         # this fallback those duplicates would tear away from the
         # mesh during posing.
         self._assign_fallback_weights(obj)
-
 
     def _assign_fallback_weights(self, obj):
         """For each vertex with no vertex-group weights, copy weights
@@ -2320,8 +2446,9 @@ class _ImportState:
             fallback_bone = self._pick_fallback_root_bone(obj)
             if fallback_bone is None:
                 return
-            vg = (obj.vertex_groups.get(fallback_bone)
-                  or obj.vertex_groups.new(name=fallback_bone))
+            vg = obj.vertex_groups.get(fallback_bone) or obj.vertex_groups.new(
+                name=fallback_bone
+            )
             for vi in unweighted:
                 vg.add([vi], 1.0, "REPLACE")
             return
@@ -2346,6 +2473,7 @@ class _ImportState:
         # force is ~12M Python iterations = many seconds.
         try:
             from mathutils import kdtree
+
             _kd = kdtree.KDTree(len(weighted))
             for local_idx, src_vi in enumerate(weighted):
                 p = positions[src_vi]
@@ -2384,12 +2512,14 @@ class _ImportState:
             else:
                 # KD-tree unavailable; brute-force fallback
                 best_vi = weighted[0]
-                best_d2 = float('inf')
+                best_d2 = float("inf")
                 px, py, pz = p[0], p[1], p[2]
                 for wvi in weighted:
                     wx, wy, wz = positions[wvi]
-                    dx = wx - px; dy = wy - py; dz = wz - pz
-                    d2 = dx*dx + dy*dy + dz*dz
+                    dx = wx - px
+                    dy = wy - py
+                    dz = wz - pz
+                    d2 = dx * dx + dy * dy + dz * dz
                     if d2 < best_d2:
                         best_d2 = d2
                         best_vi = wvi
@@ -2407,8 +2537,9 @@ class _ImportState:
 
         # Apply
         for bone_name, entries in per_bone_fallback.items():
-            vg = (obj.vertex_groups.get(bone_name)
-                  or obj.vertex_groups.new(name=bone_name))
+            vg = obj.vertex_groups.get(bone_name) or obj.vertex_groups.new(
+                name=bone_name
+            )
             for vi, w in entries:
                 vg.add([vi], w, "REPLACE")
 
@@ -2417,10 +2548,10 @@ class _ImportState:
         # between two coordinate spaces (post-rebind FTM-rest vs
         # pre-rebind mesh source). Same accumulation logic as the
         # main rebind block in _build_mesh.
-        rebind = getattr(self, '_bone_rebind', None) or {}
+        rebind = getattr(self, "_bone_rebind", None) or {}
         if rebind:
-            vi_to_accum = {}      # vi -> 4x4 accumulator
-            vi_to_wsum  = {}      # vi -> total weight applied
+            vi_to_accum = {}  # vi -> 4x4 accumulator
+            vi_to_wsum = {}  # vi -> total weight applied
             for bone_name, entries in per_bone_fallback.items():
                 bone_rebind = rebind.get(bone_name)
                 if bone_rebind is None:
@@ -2442,9 +2573,9 @@ class _ImportState:
                 v_old = obj.data.vertices[vi].co
                 v_h = Vector((v_old.x, v_old.y, v_old.z, 1.0))
                 v_new = accum @ v_h
-                obj.data.vertices[vi].co = Vector((v_new.x / ws,
-                                                    v_new.y / ws,
-                                                    v_new.z / ws))
+                obj.data.vertices[vi].co = Vector(
+                    (v_new.x / ws, v_new.y / ws, v_new.z / ws)
+                )
                 n_rebound += 1
 
     def _pick_fallback_root_bone(self, obj):
@@ -2452,18 +2583,24 @@ class _ImportState:
         verts when no weighted verts exist on the mesh. Prefers a
         skeleton root if one is registered, else returns None.
         """
-        roots = getattr(self, '_skel_root_names', None) or set()
+        roots = getattr(self, "_skel_root_names", None) or set()
         if roots:
             return sorted(roots)[0]
         # Last resort: find any armature bone
-        arm = getattr(self, 'armature_obj', None)
+        arm = getattr(self, "armature_obj", None)
         if arm and arm.data and arm.data.bones:
             return arm.data.bones[0].name
         return None
 
-    def _weld_and_assign_skin(self, obj, me, pre_weld_skin,
-                              source_positions, pending_per_vi_normal,
-                              pending_loop_normals):
+    def _weld_and_assign_skin(
+        self,
+        obj,
+        me,
+        pre_weld_skin,
+        source_positions,
+        pending_per_vi_normal,
+        pending_loop_normals,
+    ):
         """Optional path: weld duplicate-position verts and merge
         their per-bone weights. Triggered by the
         "Weld Duplicate Vertices" import option. Use when animating
@@ -2494,15 +2631,18 @@ class _ImportState:
             for vi, w in influences:
                 vi_to_weights.setdefault(vi, []).append((bone_name, round(w, EPS)))
         vi_weight_sig = [
-            tuple(sorted(vi_to_weights.get(vi, [])))
-            for vi in range(_pre_count)
+            tuple(sorted(vi_to_weights.get(vi, []))) for vi in range(_pre_count)
         ]
 
         key_to_vis: dict = {}
         for vi in range(_pre_count):
             p = pre_weld_positions[vi]
-            key = (round(p[0], EPS), round(p[1], EPS), round(p[2], EPS),
-                   vi_weight_sig[vi])
+            key = (
+                round(p[0], EPS),
+                round(p[1], EPS),
+                round(p[2], EPS),
+                vi_weight_sig[vi],
+            )
             key_to_vis.setdefault(key, []).append(vi)
 
         # Build pre_to_post mapping
@@ -2514,7 +2654,6 @@ class _ImportState:
             for vi in vs:
                 pre_to_keep[vi] = keep
         pre_to_post = {vi: keep_to_post[pre_to_keep[vi]] for vi in range(_pre_count)}
-        _post_count = len(keeper_pre_vis)
 
         # Apply weld via bmesh
         _bm = _bmesh.new()
@@ -2554,7 +2693,7 @@ class _ImportState:
         # handle blendshape alternates (two post-verts at the same XYZ
         # but with different bone influences) — a position-only key
         # would clobber one bone's weights with another's.
-        pos_to_post_vis: dict = {}   # pos_key -> list of post_vi
+        pos_to_post_vis: dict = {}  # pos_key -> list of post_vi
         for v in obj.data.vertices:
             pk = (round(v.co.x, EPS), round(v.co.y, EPS), round(v.co.z, EPS))
             pos_to_post_vis.setdefault(pk, []).append(v.index)
@@ -2567,7 +2706,7 @@ class _ImportState:
         # For positions with only one post-vert this is unambiguous.
         # For positions with multiple post-verts (blendshape alternates),
         # we assign them in keeper order (sorted ascending).
-        keeper_for_pk: dict = {}   # pos_key -> [keeper_pre_vi, ...]
+        keeper_for_pk: dict = {}  # pos_key -> [keeper_pre_vi, ...]
         for vis in key_to_vis.values():
             keep = min(vis)
             p = pre_weld_positions[keep]
@@ -2603,7 +2742,7 @@ class _ImportState:
         # boundary verts each independently encode their full
         # influence; max picks the strongest of the two layers.
         n_actual = len(obj.data.vertices)
-        accum: dict = {}   # bone_name -> {post_vi: max_weight}
+        accum: dict = {}  # bone_name -> {post_vi: max_weight}
         for bone_name, influences in pre_weld_skin:
             bone_map = accum.setdefault(bone_name, {})
             for pre_vi, w in influences:
@@ -2620,8 +2759,9 @@ class _ImportState:
         for bone_name, bone_map in accum.items():
             if not bone_map:
                 continue
-            vg = (obj.vertex_groups.get(bone_name)
-                  or obj.vertex_groups.new(name=bone_name))
+            vg = obj.vertex_groups.get(bone_name) or obj.vertex_groups.new(
+                name=bone_name
+            )
             for post_vi, w in bone_map.items():
                 if w > 100.0:
                     w = 100.0
@@ -2666,9 +2806,9 @@ class _ImportState:
                 sx = sum(n[0] for n in ns)
                 sy = sum(n[1] for n in ns)
                 sz = sum(n[2] for n in ns)
-                mag = (sx*sx + sy*sy + sz*sz) ** 0.5
+                mag = (sx * sx + sy * sy + sz * sz) ** 0.5
                 if mag > 1e-9:
-                    post_vi_to_normal[post_vi] = (sx/mag, sy/mag, sz/mag)
+                    post_vi_to_normal[post_vi] = (sx / mag, sy / mag, sz / mag)
                 else:
                     post_vi_to_normal[post_vi] = ns[0]
             post_loop_normals = []
@@ -2706,8 +2846,10 @@ class _ImportState:
             polys = edge_to_polys.get(edge.index, [])
             if len(polys) != 2:
                 continue
-            p0 = me.polygons[polys[0]]; p1 = me.polygons[polys[1]]
-            n0 = p0.normal; n1 = p1.normal
+            p0 = me.polygons[polys[0]]
+            p1 = me.polygons[polys[1]]
+            n0 = p0.normal
+            n1 = p1.normal
             cos_a = max(-1.0, min(1.0, n0.dot(n1)))
             if cos_a < threshold_cos:
                 edge.use_edge_sharp = True
@@ -2727,7 +2869,7 @@ class _ImportState:
             return
 
         arm_obj = self.armature_obj
-        scene   = context.scene
+        scene = context.scene
 
         target_fps = int(round(self.ticks_per_second))
         if scene.render.fps != target_fps:
@@ -2746,7 +2888,6 @@ class _ImportState:
         action = bpy.data.actions.new(anim_set_node.name or "Action")
 
         if hasattr(action, "slots"):
-
             slot = action.slots.new(id_type="OBJECT", name=arm_obj.name)
             anim_data.action = action
             anim_data.action_slot = slot
@@ -2778,12 +2919,16 @@ class _ImportState:
                 _kn_nums = _kn.nums()
                 if len(_kn_nums) >= 2:
                     _tracks_by_type[int(_kn_nums[0])] = _kn
-            if (0 in _tracks_by_type and 1 in _tracks_by_type
-                    and 2 in _tracks_by_type
-                    and 3 not in _tracks_by_type
-                    and 4 not in _tracks_by_type):
+            if (
+                0 in _tracks_by_type
+                and 1 in _tracks_by_type
+                and 2 in _tracks_by_type
+                and 3 not in _tracks_by_type
+                and 4 not in _tracks_by_type
+            ):
                 _synth = _compose_type4_from_trs(
-                    _tracks_by_type[0], _tracks_by_type[1], _tracks_by_type[2])
+                    _tracks_by_type[0], _tracks_by_type[1], _tracks_by_type[2]
+                )
                 if _synth is not None:
                     key_nodes = [_synth]
 
@@ -2792,8 +2937,8 @@ class _ImportState:
                 if len(key_nums) < 2:
                     continue
 
-                key_type      = int(key_nums[0])
-                key_count     = int(key_nums[1])
+                key_type = int(key_nums[0])
+                key_count = int(key_nums[1])
                 expected_vals = _KEY_TYPE_VALUES.get(key_type)
                 if expected_vals is None:
                     continue
@@ -2801,16 +2946,20 @@ class _ImportState:
                 all_key_vals = []
                 i = 2
                 while i < len(key_nums):
-                    if i + 1 >= len(key_nums): break
-                    frame_tick = key_nums[i]; i += 1
+                    if i + 1 >= len(key_nums):
+                        break
+                    frame_tick = key_nums[i]
                     i += 1
-                    if i + expected_vals > len(key_nums): break
-                    all_key_vals.append((frame_tick, key_nums[i:i + expected_vals]))
+                    i += 1
+                    if i + expected_vals > len(key_nums):
+                        break
+                    all_key_vals.append((frame_tick, key_nums[i : i + expected_vals]))
                     i += expected_vals
-                    if len(all_key_vals) >= key_count: break
+                    if len(all_key_vals) >= key_count:
+                        break
 
                 local_rest_q = None
-                is_skel_root  = (bone_name in self._skel_root_names)
+                is_skel_root = bone_name in self._skel_root_names
 
                 # Compute the bone's local rest rotation/translation. These
                 # are wrapped in try/except because a degenerate rest pose
@@ -2822,9 +2971,11 @@ class _ImportState:
                     pb = pose_bone
                     try:
                         if pb.parent:
-                            local_rest_bl = (pb.parent.bone.matrix_local.inverted()
-                                             @ pb.bone.matrix_local)
-                            local_rest_q  = local_rest_bl.to_quaternion()
+                            local_rest_bl = (
+                                pb.parent.bone.matrix_local.inverted()
+                                @ pb.bone.matrix_local
+                            )
+                            local_rest_q = local_rest_bl.to_quaternion()
                         elif is_skel_root:
                             # The skeleton root has no Blender parent, but its
                             # bind pose may have a non-identity rotation (e.g.
@@ -2840,8 +2991,9 @@ class _ImportState:
                             # ChiDog, Lizbert, etc.) this is identity and
                             # local_rest_q is identity — matching the previous
                             # behaviour exactly.
-                            _src_bind_bl = (self._conv_mat.inverted()
-                                            @ pb.bone.matrix_local)
+                            _src_bind_bl = (
+                                self._conv_mat.inverted() @ pb.bone.matrix_local
+                            )
                             local_rest_q = _src_bind_bl.to_3x3().to_quaternion()
                         else:
                             local_rest_q = pb.bone.matrix_local.to_quaternion()
@@ -2852,20 +3004,22 @@ class _ImportState:
                     pb = pose_bone
                     try:
                         if pb.parent:
-                            _t2_local_rest = (pb.parent.bone.matrix_local.inverted()
-                                              @ pb.bone.matrix_local)
+                            _t2_local_rest = (
+                                pb.parent.bone.matrix_local.inverted()
+                                @ pb.bone.matrix_local
+                            )
                             _t2_lock = self.lock_leaf_translation and not pb.children
                         else:
                             _t2_local_rest = pb.bone.matrix_local
                             _t2_lock = self.lock_root_translation
-                        _t2_rest_head    = _t2_local_rest.to_translation()
+                        _t2_rest_head = _t2_local_rest.to_translation()
                         _t2_rest_rot_inv = _t2_local_rest.to_3x3().inverted()
                     except (ValueError, ZeroDivisionError):
-                        _t2_local_rest   = Matrix.Identity(4)
-                        _t2_lock         = False
-                        _t2_rest_head    = Vector((0.0, 0.0, 0.0))
+                        _t2_local_rest = Matrix.Identity(4)
+                        _t2_lock = False
+                        _t2_rest_head = Vector((0.0, 0.0, 0.0))
                         _t2_rest_rot_inv = Matrix.Identity(3)
-                    _t2_conv3        = self._conv_mat.to_3x3()
+                    _t2_conv3 = self._conv_mat.to_3x3()
 
                 chan_data: dict = {}
 
@@ -2880,7 +3034,7 @@ class _ImportState:
                     frame = float(frame_tick) * self.tick_scale
                     try:
                         if key_type == 0:
-                            abs_q  = Quaternion((vals[0], -vals[1], -vals[2], -vals[3]))
+                            abs_q = Quaternion((vals[0], -vals[1], -vals[2], -vals[3]))
                             pose_q = local_rest_q.inverted() @ abs_q
                             if prev_pose_q is not None:
                                 pose_q.make_compatible(prev_pose_q)
@@ -2901,7 +3055,9 @@ class _ImportState:
                                 loc = _t2_rest_rot_inv @ (anim_t - _t2_rest_head)
                             else:
                                 anim_t = _t2_conv3 @ (
-                                    Vector((vals[0], vals[1], vals[2])) * self.global_scale)
+                                    Vector((vals[0], vals[1], vals[2]))
+                                    * self.global_scale
+                                )
                                 loc = _t2_rest_rot_inv @ (anim_t - _t2_rest_head)
 
                             for ci, v in enumerate(loc):
@@ -2914,13 +3070,17 @@ class _ImportState:
 
                             dx_local = _mat4_from_list(vals)
                             if pose_bone.parent:
-                                matrix_basis = (pose_bone.bone.matrix_local.inverted()
-                                                @ pose_bone.parent.bone.matrix_local
-                                                @ dx_local)
+                                matrix_basis = (
+                                    pose_bone.bone.matrix_local.inverted()
+                                    @ pose_bone.parent.bone.matrix_local
+                                    @ dx_local
+                                )
                             else:
-                                matrix_basis = (pose_bone.bone.matrix_local.inverted()
-                                                @ self._conv_mat
-                                                @ dx_local)
+                                matrix_basis = (
+                                    pose_bone.bone.matrix_local.inverted()
+                                    @ self._conv_mat
+                                    @ dx_local
+                                )
                             mb_loc = matrix_basis.to_translation()
                             mb_rot = matrix_basis.to_quaternion()
                             mb_sca = matrix_basis.to_scale()
@@ -2938,13 +3098,13 @@ class _ImportState:
                     except Exception:
                         keyframe_errors += 1
 
-                _ROT_PATH   = "pose.bones[\"%s\"].rotation_quaternion"
-                _SCALE_PATH = "pose.bones[\"%s\"].scale"
-                _LOC_PATH   = "pose.bones[\"%s\"].location"
+                _ROT_PATH = 'pose.bones["%s"].rotation_quaternion'
+                _SCALE_PATH = 'pose.bones["%s"].scale'
+                _LOC_PATH = 'pose.bones["%s"].location'
                 _data_path_map = {
-                    0: (_ROT_PATH,   range(4)),
+                    0: (_ROT_PATH, range(4)),
                     1: (_SCALE_PATH, range(3)),
-                    2: (_LOC_PATH,   range(3)),
+                    2: (_LOC_PATH, range(3)),
                 }
                 if key_type in (0, 1, 2):
                     path_tmpl, indices = _data_path_map[key_type]
@@ -2954,17 +3114,19 @@ class _ImportState:
                         pts = chan_data.get(ci)
                         if not pts:
                             continue
-                        fc = _get_or_create_fcurve(action, anim_data, path, ci, bone_name)
+                        fc = _get_or_create_fcurve(
+                            action, anim_data, path, ci, bone_name
+                        )
                         fc.keyframe_points.add(len(pts))
-                        for kp, (fr, v) in zip(fc.keyframe_points[-len(pts):], pts):
+                        for kp, (fr, v) in zip(fc.keyframe_points[-len(pts) :], pts):
                             kp.co = (fr, v)
                             kp.interpolation = "LINEAR"
                         fc.update()
                 elif key_type in (3, 4):
                     pose_bone.rotation_mode = "QUATERNION"
                     for offset, path_tmpl, indices in [
-                        (10, _LOC_PATH,   range(3)),
-                        (20, _ROT_PATH,   range(4)),
+                        (10, _LOC_PATH, range(3)),
+                        (20, _ROT_PATH, range(4)),
                         (30, _SCALE_PATH, range(3)),
                     ]:
                         path = path_tmpl % bone_name
@@ -2972,14 +3134,19 @@ class _ImportState:
                             pts = chan_data.get(offset + ci)
                             if not pts:
                                 continue
-                            fc = _get_or_create_fcurve(action, anim_data, path, ci, bone_name)
+                            fc = _get_or_create_fcurve(
+                                action, anim_data, path, ci, bone_name
+                            )
                             fc.keyframe_points.add(len(pts))
-                            for kp, (fr, v) in zip(fc.keyframe_points[-len(pts):], pts):
+                            for kp, (fr, v) in zip(
+                                fc.keyframe_points[-len(pts) :], pts
+                            ):
                                 kp.co = (fr, v)
                                 kp.interpolation = "LINEAR"
                             fc.update()
 
         bpy.ops.object.mode_set(mode="OBJECT")
+
 
 # Backwards-compatible alias.
 import_x = import_xcache
