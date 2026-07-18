@@ -8,6 +8,7 @@
 import os
 import math
 import re
+import traceback
 import bpy
 from mathutils import Matrix, Vector, Quaternion
 from . import parser as cache_parser
@@ -59,7 +60,11 @@ def _try_load_image(base_dir: str, asset_path: str):
                         break
                     candidates.append(os.path.join(parent, sub, stem + ext))
 
+    seen = set()
     for c in candidates:
+        if c in seen:
+            continue
+        seen.add(c)
         if os.path.isfile(c):
             try:
                 return bpy.data.images.load(c, check_existing=True)
@@ -96,7 +101,7 @@ def _image_has_transparency(img) -> bool:
     try:
         if img is None:
             return False
-        key = img.name
+        key = (img.name, tuple(img.size), getattr(img, "depth", 0))
         if key in _ALPHA_CACHE:
             return _ALPHA_CACHE[key]
 
@@ -260,13 +265,15 @@ def _build_mesh_object(
         for poly in me.polygons:
             poly.use_smooth = True
         rotated = [(n[0], -n[2], n[1]) for n in mesh_data.normals]
-        loop_normals = []
-        for poly in me.polygons:
-            for loop_idx in poly.loop_indices:
-                vi = me.loops[loop_idx].vertex_index
-                loop_normals.append(
-                    rotated[vi] if vi < len(rotated) else (0.0, 0.0, 1.0)
-                )
+        try:
+            _lvis = [0] * len(me.loops)
+            me.loops.foreach_get("vertex_index", _lvis)
+        except Exception:
+            _lvis = [lp.vertex_index for lp in me.loops]
+        n_rot = len(rotated)
+        loop_normals = [
+            rotated[vi] if vi < n_rot else (0.0, 0.0, 1.0) for vi in _lvis
+        ]
         try:
             if hasattr(me, "use_auto_smooth"):
                 me.use_auto_smooth = True
@@ -274,26 +281,39 @@ def _build_mesh_object(
         except Exception:
             pass
 
+    # One bulk read of loop -> vertex mapping, reused by every layer
+    # below. foreach_get/foreach_set are single Python->C calls; the
+    # previous per-loop indexing was one call per corner per layer.
+    n_loops = len(me.loops)
+    loop_vis = [0] * n_loops
+    try:
+        me.loops.foreach_get("vertex_index", loop_vis)
+    except Exception:
+        loop_vis = [lp.vertex_index for lp in me.loops]
+
+    def _set_uv_layer(layer, per_vert_uv, flip_v):
+        flat = [0.0] * (n_loops * 2)
+        n_src = len(per_vert_uv)
+        for li, vi in enumerate(loop_vis):
+            if vi < n_src:
+                u, v = per_vert_uv[vi]
+                flat[li * 2] = u
+                flat[li * 2 + 1] = (1.0 - v) if flip_v else v
+        try:
+            layer.data.foreach_set("uv", flat)
+        except Exception:
+            for li in range(n_loops):
+                layer.data[li].uv = (flat[li * 2], flat[li * 2 + 1])
+
     # Primary UV (V-flip to match Blender's convention).
     if mesh_data.uvs:
-        uv = me.uv_layers.new(name="UVMap")
-        for poly in me.polygons:
-            for loop_idx in poly.loop_indices:
-                vi = me.loops[loop_idx].vertex_index
-                if vi < len(mesh_data.uvs):
-                    u, v = mesh_data.uvs[vi]
-                    uv.data[loop_idx].uv = (u, 1.0 - v)
+        _set_uv_layer(me.uv_layers.new(name="UVMap"), mesh_data.uvs, True)
 
     # Daecache extras as extra UV layers (preserved verbatim for export).
     for layer_name, src in (("UV2", mesh_data.uv2), ("UV3", mesh_data.uv3)):
         if not src:
             continue
-        layer = me.uv_layers.new(name=layer_name)
-        for poly in me.polygons:
-            for loop_idx in poly.loop_indices:
-                vi = me.loops[loop_idx].vertex_index
-                if vi < len(src):
-                    layer.data[loop_idx].uv = src[vi]
+        _set_uv_layer(me.uv_layers.new(name=layer_name), src, False)
 
     # Per-vertex colour as a corner BYTE_COLOR attribute.
     if mesh_data.colors:
@@ -301,18 +321,22 @@ def _build_mesh_object(
             attr = me.color_attributes.new(
                 name="Col", type="BYTE_COLOR", domain="CORNER"
             )
-            for poly in me.polygons:
-                for loop_idx in poly.loop_indices:
-                    vi = me.loops[loop_idx].vertex_index
-                    if vi < len(mesh_data.colors):
-                        c = mesh_data.colors[vi]
-                        if len(c) >= 4:
-                            attr.data[loop_idx].color = (
-                                c[0] / 255.0,
-                                c[1] / 255.0,
-                                c[2] / 255.0,
-                                c[3] / 255.0,
-                            )
+            flat = [1.0] * (n_loops * 4)
+            n_src = len(mesh_data.colors)
+            for li, vi in enumerate(loop_vis):
+                if vi < n_src:
+                    c = mesh_data.colors[vi]
+                    if len(c) >= 4:
+                        base = li * 4
+                        flat[base] = c[0] / 255.0
+                        flat[base + 1] = c[1] / 255.0
+                        flat[base + 2] = c[2] / 255.0
+                        flat[base + 3] = c[3] / 255.0
+            try:
+                attr.data.foreach_set("color", flat)
+            except Exception:
+                for li in range(n_loops):
+                    attr.data[li].color = tuple(flat[li * 4 : li * 4 + 4])
         except Exception:
             pass
 
@@ -1028,8 +1052,11 @@ def import_xcache(
                 state.import_frame_meshes(node, context)
             except Exception:
                 # Per-top-level-frame failures should not abort the import
-                # — other frames may still produce useful geometry.
-                pass
+                # — other frames may still produce useful geometry. Print
+                # the traceback so the failure is diagnosable from the
+                # system console instead of vanishing silently.
+                print(f"[io_bugsnax] frame '{node.name}' mesh import failed:")
+                traceback.print_exc()
 
     if import_animation:
         anim_sets = [n for n in root.children if n.kind == "AnimationSet"]
@@ -1041,7 +1068,8 @@ def import_xcache(
             try:
                 state.import_animation_set(node, context)
             except Exception:
-                pass
+                print(f"[io_bugsnax] AnimationSet '{node.name}' import failed:")
+                traceback.print_exc()
 
     if import_animation and set_frame_range:
         frame_range = _compute_animation_frame_range(root)
@@ -1514,7 +1542,27 @@ class _ImportState:
                 for ext in alt_exts:
                     yield stem + ext
 
+            # Per-session cache: original name -> resolved path (or None
+            # for a confirmed miss). Avoids re-running the full search
+            # fan-out for a texture already resolved this session.
+            _resolve_cache = getattr(self, "_tex_resolve_cache", None)
+            if _resolve_cache is None:
+                _resolve_cache = self._tex_resolve_cache = {}
+            _cache_key = original_tex_name or (
+                convention_tex_candidates[0] if convention_tex_candidates else None
+            )
             img = None
+            if _cache_key is not None and _cache_key in _resolve_cache:
+                _cached_path = _resolve_cache[_cache_key]
+                if _cached_path:
+                    try:
+                        img = bpy.data.images.load(_cached_path, check_existing=True)
+                    except Exception:
+                        img = None
+                if img is not None:
+                    if not original_tex_name:
+                        mat["_x_texture_filename"] = os.path.basename(_cached_path)
+                    search_paths = []  # skip the fan-out below
             tried = set()
             for sp in search_paths:
                 for candidate in _expand_candidates(sp):
@@ -1528,12 +1576,19 @@ class _ImportState:
                             img = None
                         if img is not None:
                             # Record the successfully resolved path so the
-                            # exporter can round-trip it.
+                            # exporter can round-trip it, and cache the
+                            # resolution for this session.
                             if not original_tex_name:
                                 mat["_x_texture_filename"] = os.path.basename(candidate)
+                            if _cache_key is not None:
+                                _resolve_cache[_cache_key] = candidate
                             break
                 if img is not None:
                     break
+            if img is None and _cache_key is not None and search_paths:
+                # Remember the miss too, so bulk imports don't redo the
+                # entire directory fan-out per material.
+                _resolve_cache.setdefault(_cache_key, None)
 
             # Always create a TEX_IMAGE node and connect it to the BSDF so
             # the user can re-link manually if auto-search failed.
@@ -1670,7 +1725,7 @@ class _ImportState:
             cache = getattr(self, "_alpha_cache", None)
             if cache is None:
                 cache = self._alpha_cache = {}
-            key = img.name
+            key = (img.name, tuple(img.size), getattr(img, "depth", 0))
             if key in cache:
                 return cache[key]
 
@@ -1873,7 +1928,11 @@ class _ImportState:
                 try:
                     self._build_mesh(child, context, world_mat, frame_node.name)
                 except Exception:
-                    pass
+                    print(
+                        f"[io_bugsnax] mesh '{child.name or frame_node.name}' "
+                        f"build failed:"
+                    )
+                    traceback.print_exc()
             elif child.kind == "Frame":
                 self.import_frame_meshes(child, context, world_mat)
 
@@ -2106,11 +2165,23 @@ class _ImportState:
                 uvs.append((uvnums[ui], 1.0 - uvnums[ui + 1]))
                 ui += 2
             uv_layer = me.uv_layers.new(name="UVMap")
-            for poly in me.polygons:
-                for loop_idx in poly.loop_indices:
-                    vi = me.loops[loop_idx].vertex_index
-                    if vi < len(uvs):
-                        uv_layer.data[loop_idx].uv = uvs[vi]
+            try:
+                _n_loops = len(me.loops)
+                _lvis = [0] * _n_loops
+                me.loops.foreach_get("vertex_index", _lvis)
+                _flat = [0.0] * (_n_loops * 2)
+                _n_uv = len(uvs)
+                for _li, _vi in enumerate(_lvis):
+                    if _vi < _n_uv:
+                        _flat[_li * 2] = uvs[_vi][0]
+                        _flat[_li * 2 + 1] = uvs[_vi][1]
+                uv_layer.data.foreach_set("uv", _flat)
+            except Exception:
+                for poly in me.polygons:
+                    for loop_idx in poly.loop_indices:
+                        vi = me.loops[loop_idx].vertex_index
+                        if vi < len(uvs):
+                            uv_layer.data[loop_idx].uv = uvs[vi]
 
         # PZ / 3DS Max biped exports often skip MeshNormals and
         # MeshTextureCoords entirely, packing per-vertex normals,
@@ -2249,11 +2320,63 @@ class _ImportState:
 
             obj.matrix_world = Matrix.Identity(4)
             obj.parent = self.armature_obj
+
+            # A chunk with no NONZERO skin weights is static geometry —
+            # (empty placeholder SkinWeights blocks don't count: the
+            # parser regenerates one per bone from the bone list, so
+            # every unrigged chunk carries a full set of them) —
+            # a prop that was object-parented in the source scene rather
+            # than rigged, so the exporter had no vertex groups to write
+            # and the file legitimately contains none.
+            #
+            # Such a chunk must keep the position its vertices already
+            # encode. Giving it an armature modifier does the opposite:
+            # with no vertex groups to drive it, _assign_fallback_weights
+            # binds every vert 100% to the SKELETON ROOT, and since the
+            # importer sets the scene to the animation's first frame, the
+            # prop is immediately swung by the root's pose delta —
+            # measured on the Bacon export, props sitting 1.6 units from
+            # their local bone were being dragged by a root 13.9 units
+            # away. Nothing in the file asks for that binding; it is
+            # invented here. So: no modifier, no vertex groups, no
+            # fallback. Object-parenting to the armature keeps the prop
+            # travelling with the model as a whole while its geometry
+            # stays exactly where the file puts it.
+            if not pre_weld_skin:
+                # Preserve the file's empty-SkinWeights placeholders as
+                # empty vertex groups (round-trip fidelity) — they carry
+                # no weights, so they bind nothing.
+                for bone_name in placeholder_bones:
+                    if bone_name not in obj.vertex_groups:
+                        obj.vertex_groups.new(name=bone_name)
+                for poly in obj.data.polygons:
+                    poly.use_smooth = True
+                obj.data.update()
+                if getattr(self, "smooth_shade_from_faces", False):
+                    _clear_custom_split_normals(obj.data)
+                elif _pending_loop_normals is not None:
+                    _apply_custom_normals(obj.data, _pending_loop_normals)
+                    if self.infer_sharps:
+                        self._infer_sharps_from_normal_list(
+                            obj.data, _pending_loop_normals
+                        )
+                return
+
             arm_mod = obj.modifiers.new("Armature", "ARMATURE")
             arm_mod.object = self.armature_obj
             arm_mod.use_vertex_groups = True
 
-            arm_mod.use_deform_preserve_volume = True
+            # Linear blend skinning, matching both Blender's default and
+            # what the engine does. This was hardcoded True, which switches
+            # Blender to DUAL QUATERNION skinning — a different deformation
+            # algorithm. It is invisible to any file-level comparison
+            # (weights, joints and bind matrices all round-trip exactly, and
+            # evaluating them with LBS gives identical results), but in the
+            # viewport it bulges the posed mesh outward in every direction:
+            # measured on the Bacon strip at frame 1, the posed bounds grew
+            # by up to 0.078 units on every axis except X, which was enough
+            # to swallow static props sitting just off the surface.
+            arm_mod.use_deform_preserve_volume = False
 
             do_weld = getattr(self, "weld_duplicate_verts", False)
 

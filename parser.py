@@ -554,7 +554,7 @@ def _find_next_bone_header(data: bytes, search_from: int) -> Optional[int]:
         if not all(0x20 <= b < 0x7F for b in nb):
             continue
         name = nb.decode("ascii")
-        if not (name[0].isupper() or name[0].isalpha()):
+        if not name[0].isalpha():
             continue
         return off
     return None
@@ -1066,6 +1066,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
         bad = 0
         n_zero = 0
         n_int_x = 0  # X is a small integer 0..1000 (looks like an index, not a coord)
+        int_x_values: set = set()  # DISTINCT integer-X values (see filter below)
         n_denorm = 0  # Any coord in (0, 1e-30) — denormalized garbage
         sx_min = sx_max = verts[0][0]
         sy_min = sy_max = verts[0][1]
@@ -1099,6 +1100,7 @@ def _parse_mesh_section(data: bytes, search_start: int):
             # which all pass `x == int(x)`.
             if 0 <= x <= 1000 and x == int(x):
                 n_int_x += 1
+                int_x_values.add(x)
             if x < sx_min:
                 sx_min = x
             if x > sx_max:
@@ -1130,11 +1132,23 @@ def _parse_mesh_section(data: bytes, search_start: int):
         # verts are at (0, 0, 0).
         if n_zero > max(4, vert_count // 20):
             continue
-        # Integer-X ratio: lookup-table data mis-read as verts has
-        # many integer X values. Real character meshes have <5% (a
-        # stylised cube might have a couple of corners at X=1.0).
-        # Reject if >20% of verts have integer X in [0, 1000].
-        if n_int_x > max(8, vert_count // 5):
+        # Integer-X filter: lookup-table data mis-read as verts has many
+        # integer X values. The COUNT alone is not sufficient evidence —
+        # clean primitive-derived geometry (a strip built from a unit
+        # cylinder/box, typical of models authored outside Maya and
+        # imported via GLB/FBX) legitimately puts 30%+ of its verts on
+        # exact unit coordinates. Measured: our Bacon export has 66/200
+        # integer-X verts but only ONE distinct value (1.0), whereas the
+        # index tables this filter targets produce 67-200 DISTINCT
+        # increasing values (1.0, 5.0, 9.0, 13.0, ...) — the distinct
+        # count scales with the block size for garbage and stays tiny
+        # for geometry. Corpus reference: WaffleGeo 1 distinct, CookieGeo
+        # 1, ZipperGeo 0. So require BOTH a high count AND high variety
+        # before rejecting; a mesh whose integer Xs are a handful of
+        # repeated primitive coordinates is real geometry.
+        if n_int_x > max(8, vert_count // 5) and len(int_x_values) > max(
+            4, n_int_x // 8
+        ):
             continue
         # Tight bbox check: a real character mesh has spatial
         # extent in all three axes. Fixup-frame fake "vert blocks"
@@ -1947,7 +1961,7 @@ def _build_skeleton_frames(
     return root_nodes
 
 
-def _build_mesh_frame_node(mesh: dict, bones: list) -> XNode:
+def _build_mesh_frame_node(mesh: dict, bones: list) -> tuple:
     """Build a Frame + Mesh + MeshNormals + MeshTextureCoords + MeshMaterialList
     + XSkinMeshHeader + SkinWeights XNode tree from a parsed xcache mesh dict
     and the bone list. Returns (frame_node, list_of_top_level_materials)."""
@@ -2310,7 +2324,13 @@ def parse_xcache_file(filepath: str, split_submeshes: bool = False) -> XNode:
     anim_data: dict[str, dict] = {}
     for i, bone in enumerate(bones):
         if i + 1 < len(bones):
-            next_bone_hdr = bones[i + 1]["data_start"] - 64 - len(bones[i + 1]["name"])
+            # Bone i+1's header starts 8 bytes (parent_idx u32 + name_len
+            # u32) before its name, which itself precedes the 64-byte FTM
+            # that data_start points past. Omitting the -8 let bone i's
+            # anim/skin scanners read 8 bytes into bone i+1's header.
+            next_bone_hdr = (
+                bones[i + 1]["data_start"] - 64 - len(bones[i + 1]["name"]) - 8
+            )
         else:
             # Last bone: there's no following bone header, so
             # `after_bones` equals this bone's data_start (zero-sized

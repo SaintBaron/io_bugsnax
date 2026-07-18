@@ -15,7 +15,7 @@ cache).
 bl_info = {
     "name": "Bugsnax Cache (.objcache, .daecache, .xcache)",
     "author": "Saint Baron",
-    "version": (1, 0, 1),
+    "version": (1, 0, 2),
     "blender": (3, 0, 0),
     "location": "File > Import/Export",
     "description": "Import and export Bugsnax .objcache, .daecache, and .xcache files",
@@ -374,6 +374,14 @@ class ExportXcache(bpy.types.Operator, ExportHelper):
     anim_frame_start: bpy.props.IntProperty(name="Frame Start", default=1)
     anim_frame_end: bpy.props.IntProperty(name="Frame End", default=250)
 
+    def invoke(self, context, event):
+        # Prefill the bake range from the scene instead of always baking
+        # 250 frames (the old default baked 5x more frames than a typical
+        # 50-frame action, at one scene.frame_set per frame per bone pass).
+        self.anim_frame_start = context.scene.frame_start
+        self.anim_frame_end = context.scene.frame_end
+        return super().invoke(context, event)
+
     def draw(self, context):
         layout = self.layout
         box = layout.box()
@@ -396,9 +404,27 @@ class ExportXcache(bpy.types.Operator, ExportHelper):
     def execute(self, context):
         keywords = self.as_keywords(ignore=("filter_glob", "check_existing"))
         try:
-            result, warnings = exporter.export_xcache_from_blender(context, **keywords)
-        except Exception as e:
-            self.report({"ERROR"}, f"Export failed: {e}")
+            ret = exporter.export_xcache_from_blender(context, **keywords)
+            # Defensive: a None/malformed return must surface as a clear
+            # message, not an opaque unpacking TypeError (the exact bug
+            # this operator used to have).
+            if not (isinstance(ret, tuple) and len(ret) == 2):
+                self.report(
+                    {"ERROR"},
+                    f"Export failed: exporter returned {ret!r} instead of "
+                    f"(result, warnings)",
+                )
+                return {"CANCELLED"}
+            result, warnings = ret
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.report(
+                {"ERROR"},
+                "Export failed — see the system console for the full "
+                "traceback (Window > Toggle System Console on Windows; "
+                "launch Blender from a terminal on Linux/macOS).",
+            )
             return {"CANCELLED"}
         severity = "ERROR" if result == {"CANCELLED"} else "WARNING"
         for msg in warnings:

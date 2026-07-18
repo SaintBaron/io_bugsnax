@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 import math
 import struct
 import bmesh
@@ -67,12 +68,18 @@ def _gather_textures_from_material(mat):
 
 
 def _triangulate_mesh_copy(obj, depsgraph):
-    """Return a triangulated copy of the depsgraph-evaluated mesh."""
-    me_src = obj.evaluated_get(depsgraph).to_mesh()
-    me = me_src.copy() if hasattr(me_src, "copy") else me_src
+    """Return a triangulated TEMP mesh built from the depsgraph-evaluated
+    state of `obj`. The evaluated to_mesh() is freed here; the returned
+    datablock is owned by the caller, who must bpy.data.meshes.remove()
+    it when done (previously both the evaluated mesh and the copy leaked
+    one orphan datablock per export)."""
+    obj_eval = obj.evaluated_get(depsgraph)
+    me_src = obj_eval.to_mesh()
     bm = bmesh.new()
-    bm.from_mesh(me)
+    bm.from_mesh(me_src)
+    obj_eval.to_mesh_clear()
     bmesh.ops.triangulate(bm, faces=bm.faces[:])
+    me = bpy.data.meshes.new("_cache_export_tmp")
     bm.to_mesh(me)
     bm.free()
     me.calc_loop_triangles()
@@ -84,7 +91,13 @@ def _build_cache_mesh_from_object(
 ) -> cache_parser.CacheMesh:
     """Build a CacheMesh from the depsgraph-evaluated state of `obj`."""
     me = _triangulate_mesh_copy(obj, depsgraph)
+    try:
+        return _build_cache_mesh_from_temp(me, obj, global_scale, force_type)
+    finally:
+        bpy.data.meshes.remove(me)
 
+
+def _build_cache_mesh_from_temp(me, obj, global_scale, force_type):
     out = cache_parser.CacheMesh()
     out.cache_type = force_type or "obj"
     out.tint_rgba = b"\xff\xff\xff\xff"
@@ -266,6 +279,13 @@ def export_cache(
 
 
 def _axis_matrix(axis_forward, axis_up):
+    """Blender -> DirectX axis conversion.
+
+    NOTE: importer._axis_matrix has the SAME NAME but computes the
+    INVERSE mapping (B @ inv(F) there vs F @ inv(B) here). That is
+    intentional — export undoes import — but don't copy one over the
+    other when refactoring.
+    """
     import numpy as np
 
     _AXES = {
@@ -457,6 +477,27 @@ def _write_decoration_block(
         )
 
 
+
+
+def _fill_ticks(keys: dict, max_tick: int) -> dict:
+    """Return {tick: value} for every tick in 1..max_tick, filling gaps
+    with the nearest keyed tick. Single sorted sweep: O(n + m) instead of
+    the previous per-missing-tick min() scan, which was O(n * m) and
+    degraded quadratically on sparse key sets."""
+    ticks = sorted(keys.keys())
+    filled = {}
+    j = 0
+    for t in range(1, max_tick + 1):
+        if t in keys:
+            filled[t] = keys[t]
+            continue
+        # Advance j while the next keyed tick is closer to t.
+        while j + 1 < len(ticks) and abs(ticks[j + 1] - t) < abs(ticks[j] - t):
+            j += 1
+        filled[t] = keys[ticks[j]]
+    return filled
+
+
 def _write_position_stride16(out: bytearray, pos_keys: dict, max_tick: int) -> int:
     """Write the position stride-16 block (lag-1 encoded)."""
     if not pos_keys or max_tick < 1:
@@ -464,18 +505,8 @@ def _write_position_stride16(out: bytearray, pos_keys: dict, max_tick: int) -> i
 
     n_written = 0
 
-    # Sort ticks
-    ticks = sorted(pos_keys.keys())
-
-    # Build per-tick (X, Y, Z) tuples.  Insert tick 1 if missing (use first known).
-    pos_at = {}
-    for t in range(1, max_tick + 1):
-        if t in pos_keys:
-            pos_at[t] = pos_keys[t]
-        else:
-            # Use nearest available
-            nearest = min(ticks, key=lambda k: abs(k - t))
-            pos_at[t] = pos_keys[nearest]
+    # Per-tick (X, Y, Z) tuples; gaps filled from the nearest keyed tick.
+    pos_at = _fill_ticks(pos_keys, max_tick)
 
     # Step 2: emit records.  For tick=N, write (Y[N-1], Z[N-1], N, X[N]).
     for tick in range(1, max_tick + 1):
@@ -519,15 +550,8 @@ def _write_scale_stride16(
 
     n_written = 16
 
-    # Sort ticks; for missing ticks use nearest
-    ticks = sorted(scale_keys.keys())
-    scale_at = {}
-    for t in range(1, max_tick + 1):
-        if t in scale_keys:
-            scale_at[t] = scale_keys[t]
-        else:
-            nearest = min(ticks, key=lambda k: abs(k - t))
-            scale_at[t] = scale_keys[nearest]
+    # Per-tick scale; gaps filled from the nearest keyed tick.
+    scale_at = _fill_ticks(scale_keys, max_tick)
 
     # Lag-1 encoding: scale entry tick=N stores scale FOR tick=N-1.
     for entry_tick in range(2, max_tick + 1):
@@ -545,14 +569,7 @@ def _write_rotation_stride20(out: bytearray, rot_keys: dict, max_tick: int) -> i
 
     n_written = 0
 
-    ticks = sorted(rot_keys.keys())
-    rot_at = {}
-    for t in range(1, max_tick + 1):
-        if t in rot_keys:
-            rot_at[t] = rot_keys[t]
-        else:
-            nearest = min(ticks, key=lambda k: abs(k - t))
-            rot_at[t] = rot_keys[nearest]
+    rot_at = _fill_ticks(rot_keys, max_tick)
 
     for tick in range(1, max_tick + 1):
         qx, qy, qz, qw = rot_at[tick]
@@ -591,6 +608,12 @@ def _write_skin_weights(out: bytearray, skin: List[Tuple]) -> int:
     n = len(skin)
     out += struct.pack("<I", n)
 
+    # LAYOUT NOTE (writer/reader asymmetry): entries are written as
+    # <HHfH (vi u16, pad u16 = 0, weight f32, trailer u16) but the
+    # parser reads vi as a u32 at +0. That only round-trips because
+    # the pad u16 is always written as 0 — if pad ever becomes
+    # non-zero, re-import of our own exports breaks. Keep pad = 0.
+    #
     # Extract per-entry (vi, weight, chunk) — defaulting chunk to 0
     # for 2-tuple legacy entries.
     parsed = []
@@ -614,7 +637,12 @@ def _write_skin_weights(out: bytearray, skin: List[Tuple]) -> int:
         else:
             next_chunk = chunk
         # 10 bytes per entry: u16 vi, u16 pad, f32 weight, u16 trailer
-        out += struct.pack("<HHfH", vi & 0xFFFF, 0, weight, next_chunk & 0xFFFF)
+        if vi > 0xFFFF:
+            raise ValueError(
+                f"skin weight vertex index {vi} exceeds the u16 limit "
+                f"(65535) of the .xcache skin entry format"
+            )
+        out += struct.pack("<HHfH", vi, 0, weight, next_chunk & 0xFFFF)
         n_written += 10
     return n_written
 
@@ -643,7 +671,7 @@ def _write_no_anim_placeholder(out: bytearray) -> int:
 
 # ---------- Mesh-block writers ----------
 
-# Constant 144-byte common material header from offset +0 of post-bone-header
+# Common material header (48B prologue + 24B bbox + 76B epilogue + 4B color tail = 152 bytes)
 _MESH_COMMON_HEADER_PROLOGUE = bytes.fromhex(
     # +0..+27: 1.0 + 27 zeros
     "0000803f"
@@ -754,7 +782,7 @@ def _compute_bbox(verts):
 
 
 def _write_mesh_common_header(out: bytearray, bbox_min, bbox_max) -> None:
-    """Write the 144-byte common material header that appears immediately
+    """Write the 152-byte common material header that appears immediately
     after the mesh FTM: a fixed prologue, the bbox (6 floats), a fixed
     epilogue, and the color tail."""
     out += _MESH_COMMON_HEADER_PROLOGUE
@@ -803,7 +831,7 @@ def _write_mesh_block(out: bytearray, mesh: dict) -> None:
     # translation), which is what the original game files store here.
     _write_decoration_block(out, bind_translation=bind_translation)
 
-    # 144-byte common material header
+    # 152-byte common material header
     bbox_min, bbox_max = _compute_bbox(mesh.get("verts", []))
     _write_mesh_common_header(out, bbox_min, bbox_max)
 
@@ -826,6 +854,13 @@ def _write_mesh_block(out: bytearray, mesh: dict) -> None:
     normals = mesh.get("normals", [])
     uvs = mesh.get("uvs", [])
     n_verts = len(verts)
+    if n_verts > 0xFFFF + 1:
+        # Face indices are u16, so any index >= 65536 is unreachable.
+        raise ValueError(
+            f"mesh '{mesh.get('name', '?')}' has {n_verts} vertices; the "
+            f".xcache index buffer is u16 (max 65536 verts per sub-mesh). "
+            f"Split the mesh into smaller sub-meshes."
+        )
     out += struct.pack("<I", n_verts)
 
     nan_w = struct.unpack("<f", b"\xff\xff\xff\xff")[0]  # quiet NaN as in source files
@@ -866,7 +901,12 @@ def _write_mesh_block(out: bytearray, mesh: dict) -> None:
     out += struct.pack("<II", 0, total_indices)
     for face in faces:
         for vi in face:
-            out += struct.pack("<H", int(vi) & 0xFFFF)
+            if vi > 0xFFFF:
+                raise ValueError(
+                    f"mesh '{mesh.get('name', '?')}' face index {vi} "
+                    f"exceeds the u16 index-buffer limit (65535)"
+                )
+            out += struct.pack("<H", int(vi))
 
 
 # ---------- Bone-block top-level writer ----------
@@ -1091,12 +1131,9 @@ def collect_bones_from_armature(
     # Build bone dicts (without animation first)
     bone_dicts = []
     for idx, bone in enumerate(ordered):
-        # World bind pose
-        if bone.parent is None:
-            bind_world = _bl_bone_to_dx_world(bone.matrix_local, bl_to_dx_3, inv_scale)
-        else:
-            # World matrix in Blender, then convert
-            bind_world = _bl_bone_to_dx_world(bone.matrix_local, bl_to_dx_3, inv_scale)
+        # World bind pose (matrix_local is already armature-space for
+        # both root and child bones, so one conversion covers both).
+        bind_world = _bl_bone_to_dx_world(bone.matrix_local, bl_to_dx_3, inv_scale)
         bind_floats = _matrix_to_dx_floats(bind_world)
 
         # FrameTransformMatrix (parent-local).  For non-animated cases this is
@@ -1154,17 +1191,16 @@ def collect_bones_from_armature(
                         s = dx_local.to_scale()
                         q = rot.to_quaternion()
                     else:
-                        # ROOT: rotation is the pose-bone-local offset
-                        # (matrix_basis); position/scale come from world.
-                        # The importer's local_rest_q for a skel-root is the
-                        # identity quaternion, so it interprets the file's
-                        # stored quat as the pose offset directly — round-trip
-                        # therefore requires writing pose_q, not the bone's
-                        # absolute world rotation.
+                        # ROOT: write the ABSOLUTE converted world TRS.
+                        # (See the axis-conversion note above: the importer
+                        # divides its local_rest_q out of this quat, so the
+                        # absolute rotation — not the matrix_basis offset —
+                        # is what round-trips for roots whose rest rotation
+                        # isn't identity in file space.)
                         dx_world = _bl_bone_to_dx_world(world_bl, bl_to_dx_3, inv_scale)
                         t = dx_world.to_translation()
                         s = dx_world.to_scale()
-                        q = pb.matrix_basis.to_3x3().to_quaternion()
+                        q = dx_world.to_3x3().to_quaternion()
                     # The .xcache animation rotation convention stores the
                     bone_dicts[bone_idx]["rot_keys"][tick] = (-q.x, -q.y, -q.z, q.w)
                     bone_dicts[bone_idx]["scale_keys"][tick] = (s.x, s.y, s.z)
@@ -1248,14 +1284,46 @@ def collect_meshes_from_blender(
     mesh_objs, arm_obj, bl_to_dx_3, inv_scale, depsgraph=None, use_modifiers=True
 ):
     """Walk Blender mesh objects and produce mesh dicts ready for
-    encode_xcache_bytes (name, ftm, verts, normals, uvs, faces). Mesh
-    data uses the raw bind-pose vertices (not depsgraph-evaluated, so
-    armature deformation doesn't bake into the export)."""
+    encode_xcache_bytes (name, ftm, verts, normals, uvs, faces).
+
+    When use_modifiers is False (or no depsgraph is supplied), mesh data
+    uses the raw bind-pose vertices. When True, the depsgraph-evaluated
+    mesh is used — the caller (export_xcache_from_blender) temporarily
+    disables ARMATURE modifiers first so armature deformation doesn't
+    bake into the export. Safety: if evaluation changes the vertex
+    count (subsurf, mirror, ...), skin weights authored on the raw
+    verts can no longer be mapped, so we fall back to raw data for
+    that object and emit a warning.
+
+    Returns (mesh_dicts, warnings)."""
     meshes = []
+    warnings = []
     for obj in mesh_objs:
-        # IMPORTANT: use the raw obj.data (bind-pose vertices), NOT the
         me_src = obj.data
         obj_eval = None
+        if use_modifiers and depsgraph is not None and obj.modifiers:
+            try:
+                obj_eval = obj.evaluated_get(depsgraph)
+                me_eval = obj_eval.to_mesh()
+            except Exception as e:
+                warnings.append(
+                    f"'{obj.name}': modifier evaluation failed ({e}); "
+                    f"exporting raw mesh data."
+                )
+                obj_eval = None
+            else:
+                if len(me_eval.vertices) != len(obj.data.vertices):
+                    warnings.append(
+                        f"'{obj.name}': modifiers change the vertex count "
+                        f"({len(obj.data.vertices)} -> {len(me_eval.vertices)}), "
+                        f"which breaks skin-weight mapping; exporting raw "
+                        f"mesh data instead. Apply the modifier in Blender "
+                        f"first if you want it baked."
+                    )
+                    obj_eval.to_mesh_clear()
+                    obj_eval = None
+                else:
+                    me_src = me_eval
 
         # Triangulate via bmesh into a temp mesh so we have triangles only.
         bm = bmesh.new()
@@ -1269,33 +1337,143 @@ def collect_meshes_from_blender(
 
         n_verts_blender = len(me_work.vertices)
 
-        # ---- Vertex unrolling at UV seams ----
+        # Mesh-object -> armature-space (or world-space when there is no
+        # armature) transform, baked into the exported vertices below.
+        _arm_world_inv = (
+            arm_obj.matrix_world.inverted()
+            if arm_obj is not None
+            else Matrix.Identity(4)
+        )
+        _rel = _arm_world_inv @ obj.matrix_world
+        _ident = Matrix.Identity(4)
+        _rel_is_ident = all(
+            abs(_rel[_r][_c] - _ident[_r][_c]) < 1e-6
+            for _r in range(4)
+            for _c in range(4)
+        )
+        _rel_flip_winding = False
+        if _rel_is_ident:
+            _rel = None
+            _rel_nrm = None
+        else:
+            try:
+                _rel_nrm = _rel.to_3x3().inverted().transposed()
+            except Exception:
+                _rel_nrm = _rel.to_3x3()
+            # A negative-determinant transform (mirrored object, e.g. a
+            # left/right eye pair made with scale.x = -1) reflects the
+            # geometry, which reverses the effective triangle winding.
+            # The normals are carried through the inverse-transpose and
+            # still point outward, so Blender — which shades from the
+            # stored custom normals — looks correct on a round-trip and
+            # hides this. Anything that culls by winding (the engine)
+            # sees the mirrored prop inside-out. Reverse the winding so
+            # the two agree.
+            _det = (
+                _rel[0][0] * (_rel[1][1] * _rel[2][2] - _rel[1][2] * _rel[2][1])
+                - _rel[0][1] * (_rel[1][0] * _rel[2][2] - _rel[1][2] * _rel[2][0])
+                + _rel[0][2] * (_rel[1][0] * _rel[2][1] - _rel[1][1] * _rel[2][0])
+            )
+            _rel_flip_winding = _det < 0.0
+            if _rel_flip_winding:
+                warnings.append(
+                    f"'{obj.name}': mirrored (negative scale); triangle "
+                    f"winding was reversed to keep it from rendering "
+                    f"inside-out."
+                )
+
+        # ---- Per-loop split normals ----
+        # The .xcache vertex record stores ONE normal per vertex, so any
+        # hard edge has to be expressed by splitting the vertex. Reading
+        # v.normal (the smoothed per-vertex normal) silently discards
+        # every authored hard edge that a UV seam doesn't happen to
+        # coincide with: measured on the Bacon eyes, the source has 3
+        # distinct normals at each rim position (90 degrees apart) and
+        # the export came back with 2.03 on average, which rounds off
+        # the disc rim and makes the prop look like it is sinking into
+        # the surface it sits on. So read the real corner normals and
+        # split on them as well as on UV.
+        _loop_normals = None
+        try:
+            me_work.calc_normals_split()  # <=4.0; no-op/removed in 4.1+
+        except Exception:
+            pass
+        try:
+            # Blender 4.1+ exposes corner normals as a collection.
+            _cn = me_work.corner_normals
+            _loop_normals = [tuple(c.vector) for c in _cn]
+        except Exception:
+            try:
+                _loop_normals = [tuple(lp.normal) for lp in me_work.loops]
+            except Exception:
+                _loop_normals = None
+        if _loop_normals is not None and len(_loop_normals) != len(me_work.loops):
+            _loop_normals = None
+        if _loop_normals is None:
+            warnings.append(
+                f"'{obj.name}': split normals unavailable; exported with "
+                f"smoothed vertex normals (hard edges may be lost)."
+            )
+
+        # ---- Vertex unrolling at UV / normal seams ----
         uv_layer = me_work.uv_layers.active.data if me_work.uv_layers.active else None
 
-        # Per-vert distinct UVs.  Each entry: list of (uv_tuple, [loop_idx, ...]).
+        # Per-vert distinct (uv, normal) keys. Each entry:
+        #   ((uv_tuple, normal_tuple), [loop_idx, ...])
         UV_ROUND = 6
+        NRM_ROUND = 4
         per_vert_uv_groups = [[] for _ in range(n_verts_blender)]
-        # loop -> (blender_vi, uv_group_idx_within_that_vert)
+        # loop -> (blender_vi, group_idx_within_that_vert)
         loop_uv_assignment = [None] * len(me_work.loops)
+
+        def _nrm_key(loop_index):
+            if _loop_normals is None:
+                return None
+            n = _loop_normals[loop_index]
+            return (
+                round(float(n[0]), NRM_ROUND),
+                round(float(n[1]), NRM_ROUND),
+                round(float(n[2]), NRM_ROUND),
+            )
 
         if uv_layer is not None:
             for loop in me_work.loops:
                 vi = loop.vertex_index
                 raw_uv = uv_layer[loop.index].uv
-                uv_key = (
-                    round(float(raw_uv[0]), UV_ROUND),
-                    round(float(raw_uv[1]), UV_ROUND),
+                key = (
+                    (
+                        round(float(raw_uv[0]), UV_ROUND),
+                        round(float(raw_uv[1]), UV_ROUND),
+                    ),
+                    _nrm_key(loop.index),
                 )
                 groups = per_vert_uv_groups[vi]
-                # Find existing group with matching UV
+                # Find existing group with matching (uv, normal)
                 gi = -1
                 for k, (existing_key, _loops) in enumerate(groups):
-                    if existing_key == uv_key:
+                    if existing_key == key:
                         gi = k
                         break
                 if gi < 0:
                     gi = len(groups)
-                    groups.append((uv_key, [loop.index]))
+                    groups.append((key, [loop.index]))
+                else:
+                    groups[gi][1].append(loop.index)
+                loop_uv_assignment[loop.index] = (vi, gi)
+        elif _loop_normals is not None:
+            # No UVs, but still split on hard edges.
+            for loop in me_work.loops:
+                vi = loop.vertex_index
+                key = ((0.0, 0.0), _nrm_key(loop.index))
+                groups = per_vert_uv_groups[vi]
+                gi = -1
+                for k, (existing_key, _loops) in enumerate(groups):
+                    if existing_key == key:
+                        gi = k
+                        break
+                if gi < 0:
+                    gi = len(groups)
+                    groups.append((key, [loop.index]))
                 else:
                     groups[gi][1].append(loop.index)
                 loop_uv_assignment[loop.index] = (vi, gi)
@@ -1310,7 +1488,7 @@ def collect_meshes_from_blender(
         # it (e.g. an isolated vert).  This keeps skin-weight indexing stable.
         for vi in range(n_verts_blender):
             if not per_vert_uv_groups[vi]:
-                per_vert_uv_groups[vi].append(((0.0, 0.0), []))
+                per_vert_uv_groups[vi].append((((0.0, 0.0), None), []))
 
         # Build the export vertex array and the bl_vi -> [export_vi, ...] map.
         verts = []
@@ -1321,11 +1499,19 @@ def collect_meshes_from_blender(
         group_to_export = {}
         for bl_vi in range(n_verts_blender):
             v = me_work.vertices[bl_vi]
-            co = v.co
-            n = v.normal
+            co = v.co if _rel is None else (_rel @ v.co)
             dx_co = (bl_to_dx_3 @ Vector(co)) * inv_scale
-            dx_n = bl_to_dx_3 @ Vector(n)
-            for gi, (uv_key, _loops) in enumerate(per_vert_uv_groups[bl_vi]):
+            for gi, (group_key, _loops) in enumerate(per_vert_uv_groups[bl_vi]):
+                uv_key, nrm_key = group_key
+                # Per-group normal: the corner normal this split exists
+                # for. Falls back to the smoothed vertex normal only when
+                # split normals were unavailable or no loop uses this vert.
+                src_n = nrm_key if nrm_key is not None else tuple(v.normal)
+                n = src_n if _rel_nrm is None else (_rel_nrm @ Vector(src_n))
+                dx_n = bl_to_dx_3 @ Vector(n)
+                _L = dx_n.length
+                if _L > 1e-9:
+                    dx_n = dx_n / _L
                 export_vi = len(verts)
                 verts.append((dx_co.x, dx_co.y, dx_co.z))
                 normals.append((dx_n.x, dx_n.y, dx_n.z))
@@ -1334,12 +1520,6 @@ def collect_meshes_from_blender(
                 uvs.append((uv_key[0], 1.0 - uv_key[1]))
                 bl_to_export[bl_vi].append(export_vi)
                 group_to_export[(bl_vi, gi)] = export_vi
-
-        # Per-vertex normals.  Use the mesh's vertex normals (smooth shading
-        try:
-            me_work.calc_normals_split()
-        except Exception:
-            pass
 
         # Faces: for each loop in the triangle, pick the export vert that
         # matches the loop's UV.
@@ -1355,6 +1535,8 @@ def collect_meshes_from_blender(
                 else:
                     bl_vi, gi = assignment
                     tri_verts.append(group_to_export[(bl_vi, gi)])
+            if _rel_flip_winding:
+                tri_verts.reverse()
             faces.append(tuple(tri_verts))
 
         # FTM matrix: identity for mesh frames in observed files (the mesh
@@ -1460,7 +1642,7 @@ def collect_meshes_from_blender(
         if obj_eval is not None:
             obj_eval.to_mesh_clear()
 
-    return meshes
+    return meshes, warnings
 
 
 def export_xcache_from_blender(
@@ -1485,15 +1667,27 @@ def export_xcache_from_blender(
     depsgraph = context.evaluated_depsgraph_get()
     objects = context.selected_objects if use_selection else list(context.scene.objects)
 
-    # The importer applies M_imp = axis_fix @ axis_matrix_IMPORTER to incoming
+    # Blender -> file conversion. Must be the EXACT inverse of the
+    # importer's conv (importer._axis_matrix, which no longer applies
+    # any 180-deg axis_fix — that spin was dropped on the import side
+    # so models face +Y). The old `axis_base @ axis_fix` here made
+    # export∘import equal a 180-deg Z rotation instead of identity:
+    # invisible on xcache round-trips (a consistent twist of binds,
+    # verts, and root anim keeps the file self-consistent) but wrong
+    # for scenes authored outside xcache, and it flipped round-tripped
+    # models' in-game facing. Verified: imp_conv @ this == identity.
     axis_base = _axis_matrix(axis_forward, axis_up)
-    axis_fix = Matrix.Rotation(math.pi, 4, "Z")
-    conv_mat_4 = axis_base @ axis_fix
+    conv_mat_4 = axis_base
     bl_to_dx_3 = conv_mat_4.to_3x3()
     inv_scale = 1.0 / global_scale if global_scale != 0.0 else 1.0
 
     armature_objs = [o for o in objects if o.type == "ARMATURE"]
     mesh_objs = [o for o in objects if o.type == "MESH"]
+
+    # Honor the "Export Armature" toggle (previously accepted but
+    # silently ignored — the armature was always exported).
+    if not export_armature:
+        armature_objs = []
 
     # Sort mesh objects by _x_submesh_idx if available, so split-mesh
     # imports round-trip with sub-meshes in their original order. Objects
@@ -1540,23 +1734,64 @@ def export_xcache_from_blender(
         )
 
     # Mesh entries built from current scene (NOT spliced from any source file).
+    #
+    # When applying modifiers, ARMATURE modifiers are temporarily hidden
+    # so pose deformation doesn't bake into the exported bind-pose
+    # geometry; everything is restored in the finally block even if
+    # collection raises.
     mesh_dicts = []
     if mesh_objs:
+        _arm_mod_states = []
+        _mod_depsgraph = None
+        _prev_pose_position = None
+        if arm_obj is not None:
+            try:
+                _prev_pose_position = arm_obj.data.pose_position
+                arm_obj.data.pose_position = "REST"
+                context.view_layer.update()
+            except Exception:
+                _prev_pose_position = None
+        if use_mesh_modifiers:
+            for _mo in mesh_objs:
+                for _mod in _mo.modifiers:
+                    if _mod.type == "ARMATURE" and _mod.show_viewport:
+                        _arm_mod_states.append(_mod)
+                        _mod.show_viewport = False
+            try:
+                if _arm_mod_states:
+                    context.view_layer.update()
+                _mod_depsgraph = context.evaluated_depsgraph_get()
+            except Exception:
+                _mod_depsgraph = depsgraph
         try:
-            mesh_dicts = collect_meshes_from_blender(
+            mesh_dicts, mesh_warnings = collect_meshes_from_blender(
                 mesh_objs,
                 arm_obj,
                 bl_to_dx_3,
                 inv_scale,
-                depsgraph=depsgraph,
+                depsgraph=_mod_depsgraph if use_mesh_modifiers else None,
                 use_modifiers=use_mesh_modifiers,
             )
+            warnings.extend(mesh_warnings)
         except Exception as e:
             warnings.append(
                 f"Mesh export failed: {e}.  Exported file has skeleton + "
                 f"animation only (no geometry)."
             )
             mesh_dicts = []
+        finally:
+            for _mod in _arm_mod_states:
+                _mod.show_viewport = True
+            if _prev_pose_position is not None:
+                try:
+                    arm_obj.data.pose_position = _prev_pose_position
+                except Exception:
+                    pass
+            if _arm_mod_states or _prev_pose_position is not None:
+                try:
+                    context.view_layer.update()
+                except Exception:
+                    pass
 
     # Skin weights need both bone_dicts and mesh_dicts to exist
     if armature_objs and export_weights and mesh_dicts:
@@ -1567,6 +1802,28 @@ def export_xcache_from_blender(
     for md in mesh_dicts:
         md.pop("_bl_to_export", None)
         md.pop("_blender_obj", None)
+
+    # Sanitize names for the SEMS binary: dots and other non-word chars
+    # (Blender's '.001' auto-suffixes) never appear in engine files and
+    # break the parser's mesh-name discovery on re-import.
+    def _sanitize_name(n: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_]", "_", n)
+
+    _used_names: set = set()
+
+    def _unique(n: str) -> str:
+        base = n
+        k = 2
+        while n in _used_names:
+            n = f"{base}_{k}"
+            k += 1
+        _used_names.add(n)
+        return n
+
+    for bd in bone_dicts:
+        bd["name"] = _unique(_sanitize_name(bd["name"]))
+    for md in mesh_dicts:
+        md["name"] = _unique(_sanitize_name(md["name"]))
 
     export_xcache_to_file(
         filepath, bone_dicts, anim_frame_count, meshes=mesh_dicts or None
@@ -1582,3 +1839,5 @@ def export_xcache_from_blender(
             f"values — texture paths preserved from material custom "
             f"properties / image nodes if present."
         )
+
+    return {"FINISHED"}, warnings
